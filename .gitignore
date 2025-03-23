@@ -44,6 +44,13 @@ ENV/
 
 # Backup files
 backup/
+*.backup
+*_backup
+*.bak
+
+# Temporary files
+tmp/
+temp/
 
 # Homework files
 homework_files/ 
