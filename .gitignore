@@ -24,6 +24,7 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
+.venv/
 
 # IDE
 .idea/
@@ -42,4 +43,7 @@ ENV/
 *.log
 
 # Backup files
-backup/ 
+backup/
+
+# Homework files
+homework_files/ 

@@ -8,15 +8,16 @@ from telegram.ext import (
 from core.database import Database
 from core.migrations import migrate_database
 from handlers.admin_handlers import (
-    admin_menu, start_add_student, enter_name, choose_exam,
-    enter_link, cancel, handle_admin_actions, handle_edit_exam,
-    handle_edit_name, handle_edit_link, handle_add_note,
+    admin_menu, handle_admin_actions, start_add_student,
+    enter_name, choose_exam, enter_link, cancel,
+    handle_edit_name, handle_edit_link, handle_edit_exam, handle_add_note,
     ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE,
-    EDIT_NAME, EDIT_EXAM, EDIT_LINK, ADD_NOTE
+    EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
-    handle_display_name_change, ENTER_DISPLAY_NAME
+    handle_display_name_change, ENTER_DISPLAY_NAME, show_student_menu,
+    handle_student_selection, handle_student_edit_action
 )
 from handlers.homework_handlers import (
     show_homework_menu,
@@ -27,13 +28,17 @@ from handlers.homework_handlers import (
     handle_homework_selection,
     handle_edit_action,
     handle_edit_title,
-    handle_edit_link,
+    handle_homework_edit_link,
     handle_delete_confirmation,
     handle_page_navigation,
+    handle_file_choice,
+    handle_file_upload,
+    handle_admin_back,
     CHOOSE_EXAM as HOMEWORK_CHOOSE_EXAM,
     ENTER_TITLE, ENTER_LINK as HOMEWORK_ENTER_LINK,
     CONFIRM_DELETE as HOMEWORK_CONFIRM_DELETE,
-    SELECT_HOMEWORK, EDIT_TITLE, EDIT_LINK
+    SELECT_HOMEWORK, EDIT_TITLE, EDIT_LINK,
+    ASK_FOR_FILE, WAIT_FOR_FILE
 )
 from handlers.common_handlers import handle_start
 
@@ -123,7 +128,7 @@ def main():
                 CallbackQueryHandler(handle_edit_exam, pattern="^student_new_exam_(OGE|EGE|SCHOOL)$"),
                 CallbackQueryHandler(admin_menu, pattern="^edit_cancel$")
             ],
-            EDIT_LINK: [
+            EDIT_STUDENT_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_link),
                 CallbackQueryHandler(admin_menu, pattern="^admin_back$")
             ],
@@ -165,51 +170,50 @@ def main():
     # Создаем обработчик для управления домашними заданиями
     homework_handler = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(show_homework_menu, pattern="^homework_menu$"),
-            CallbackQueryHandler(lambda u, c: show_exam_menu(u, c, "add"), pattern="^homework_add$"),
-            CallbackQueryHandler(lambda u, c: show_exam_menu(u, c, "list"), pattern="^homework_list$"),
-            CallbackQueryHandler(lambda u, c: show_exam_menu(u, c, "edit"), pattern="^homework_edit$"),
-            CallbackQueryHandler(lambda u, c: show_exam_menu(u, c, "delete"), pattern="^homework_delete$")
+            CallbackQueryHandler(show_homework_menu, pattern="^admin_homework$"),
+            CallbackQueryHandler(show_homework_menu, pattern="^homework_(add|list|edit|delete)$")
         ],
         states={
             HOMEWORK_CHOOSE_EXAM: [
                 CallbackQueryHandler(handle_exam_choice, pattern="^homework_exam_(OGE|EGE|SCHOOL)$"),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             ENTER_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_title),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             HOMEWORK_ENTER_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_link),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             SELECT_HOMEWORK: [
                 CallbackQueryHandler(handle_homework_selection, pattern="^homework_(edit|delete)_\d+$"),
-                CallbackQueryHandler(handle_edit_action, pattern="^edit_(title|link)_\d+$"),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                CallbackQueryHandler(handle_edit_action, pattern="^homework_edit_(title|link|file)_\d+$"),
+                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_\d+$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             EDIT_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_title),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             EDIT_LINK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_link),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_edit_link),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
-            HOMEWORK_CONFIRM_DELETE: [
-                CallbackQueryHandler(handle_delete_confirmation, pattern="^confirm_delete_\d+$"),
-                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+            CONFIRM_DELETE: [
+                CallbackQueryHandler(handle_delete_confirmation, pattern="^homework_confirm_delete_\d+$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
-            ConversationHandler.END: [
-                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_(next|prev)$")
+            ASK_FOR_FILE: [
+                CallbackQueryHandler(handle_file_choice, pattern="^homework_file_(yes|no)$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            WAIT_FOR_FILE: [
+                MessageHandler(filters.Document.ALL, handle_file_upload),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ]
         },
-        fallbacks=[
-            CallbackQueryHandler(admin_menu, pattern="^admin_back$")
-        ],
-        name="homework",
-        persistent=False
+        fallbacks=[CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")]
     )
 
     # Добавляем обработчики в правильном порядке

@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from core.database import ExamType
 
 # Состояния для ConversationHandler
-ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_LINK, ADD_NOTE = range(8)
+ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
 
 # Временное хранилище данных о новых студентах
 student_data = {}
@@ -11,13 +11,15 @@ student_data = {}
 delete_data = {}
 # Временное хранилище для редактирования студента
 edit_data = {}
+# Временное хранилище для хранения ID студента при редактировании
+temp_data = {}
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
-    """Показать меню администратора"""
+    """Показывает меню администратора"""
     keyboard = [
         [
             InlineKeyboardButton("👥 Управление учениками", callback_data="admin_students"),
-            InlineKeyboardButton("📚 Управление заданиями", callback_data="homework_menu")
+            InlineKeyboardButton("📚 Управление заданиями", callback_data="admin_homework")
         ],
         [
             InlineKeyboardButton("📝 Управление конспектами", callback_data="admin_notes"),
@@ -211,13 +213,44 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
-async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик действий администратора"""
+async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает действия администратора"""
     query = update.callback_query
-    user_id = query.from_user.id
     await query.answer()
+    
+    action = query.data
+    
+    if action.startswith("edit_name_"):
+        student_id = int(action.split("_")[-1])
+        temp_data[update.effective_user.id] = {"student_id": student_id}
+        
+        db = context.bot_data['db']
+        student = db.get_student_by_id(student_id)
+        
+        await query.edit_message_text(
+            text=f"Введите новое имя для ученика:\nТекущее имя: {student.name}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_back")
+            ]])
+        )
+        return EDIT_NAME
+        
+    elif action.startswith("edit_link_"):
+        student_id = int(action.split("_")[-1])
+        temp_data[update.effective_user.id] = {"student_id": student_id}
+        
+        db = context.bot_data['db']
+        student = db.get_student_by_id(student_id)
+        
+        await query.edit_message_text(
+            text=f"Введите новую ссылку для ученика:\nТекущая ссылка: {student.lesson_link}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_back")
+            ]])
+        )
+        return EDIT_STUDENT_LINK
 
-    if not context.bot_data['db'].is_admin(user_id):
+    if not context.bot_data['db'].is_admin(query.from_user.id):
         await query.message.edit_text("⚠️ У вас нет прав для выполнения этой команды")
         return ConversationHandler.END
 
@@ -227,10 +260,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "admin_notes":
         await notes_menu(update, context)
         return ConversationHandler.END
-    elif query.data == "admin_tasks":
-        await tasks_menu(update, context)
-        return ConversationHandler.END
-    elif query.data == "homework_menu":
+    elif query.data == "admin_homework":
         from handlers.homework_handlers import show_homework_menu
         await show_homework_menu(update, context)
         return ConversationHandler.END
@@ -367,7 +397,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         student_id = int(query.data.split("_")[1])
         student = context.bot_data['db'].get_student_by_id(student_id)
         if student:
-            delete_data[user_id] = {"student_id": student_id, "exam_type": student.exam_type}
+            delete_data[query.from_user.id] = {"student_id": student_id, "exam_type": student.exam_type}
             keyboard = [
                 [
                     InlineKeyboardButton("✅ Да, удалить", callback_data="confirm_delete"),
@@ -386,17 +416,17 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
         
     elif query.data == "confirm_delete":
-        if user_id in delete_data:
-            student_id = delete_data[user_id]["student_id"]
+        if query.from_user.id in delete_data:
+            student_id = delete_data[query.from_user.id]["student_id"]
             context.bot_data['db'].delete_student(student_id)
-            del delete_data[user_id]
+            del delete_data[query.from_user.id]
             await query.answer("✅ Студент успешно удален!")
         await admin_menu(update, context)
         return ConversationHandler.END
         
     elif query.data == "cancel_delete":
-        if user_id in delete_data:
-            del delete_data[user_id]
+        if query.from_user.id in delete_data:
+            del delete_data[query.from_user.id]
             await query.answer("❌ Удаление отменено")
         await admin_menu(update, context)
         return ConversationHandler.END
@@ -484,37 +514,13 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-    elif query.data.startswith("edit_name_"):
-        student_id = int(query.data.split("_")[2])
-        student = context.bot_data['db'].get_student_by_id(student_id)
-        if student:
-            edit_data[user_id] = {"student_id": student_id, "type": "name"}
-            await query.message.edit_text(
-                f"Введите новое имя для студента {student.name}:"
-            )
-            return EDIT_NAME
-        await admin_menu(update, context)
-        return ConversationHandler.END
-
     elif query.data.startswith("edit_exam_"):
         student_id = int(query.data.split("_")[2])
         student = context.bot_data['db'].get_student_by_id(student_id)
         if student:
-            edit_data[user_id] = {"student_id": student_id, "type": "exam"}
+            edit_data[query.from_user.id] = {"student_id": student_id, "type": "exam"}
             await show_exam_buttons_edit(update, student_id)
             return EDIT_EXAM
-        await admin_menu(update, context)
-        return ConversationHandler.END
-
-    elif query.data.startswith("edit_link_"):
-        student_id = int(query.data.split("_")[2])
-        student = context.bot_data['db'].get_student_by_id(student_id)
-        if student:
-            edit_data[user_id] = {"student_id": student_id, "type": "link"}
-            await query.message.edit_text(
-                f"Введите новую ссылку на занятие для студента {student.name}:"
-            )
-            return EDIT_LINK
         await admin_menu(update, context)
         return ConversationHandler.END
 
@@ -522,7 +528,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         student_id = int(query.data.split("_")[2])
         student = context.bot_data['db'].get_student_by_id(student_id)
         if student:
-            edit_data[user_id] = {"student_id": student_id, "type": "note"}
+            edit_data[query.from_user.id] = {"student_id": student_id, "type": "note"}
             await query.message.edit_text(
                 f"Введите заметку для студента {student.name}:"
             )
@@ -533,40 +539,46 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     # Для всех остальных случаев
     return ConversationHandler.END
 
-async def handle_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нового имени студента"""
+async def handle_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает изменение имени ученика"""
     user_id = update.effective_user.id
-    if user_id not in edit_data or edit_data[user_id]["type"] != "name":
-        await update.message.reply_text("❌ Ошибка редактирования. Начните сначала.")
-        await admin_menu(update, context)
+    if user_id not in temp_data:
+        await update.message.reply_text("❌ Ошибка: данные не найдены")
         return ConversationHandler.END
-        
+    
+    student_id = temp_data[user_id]["student_id"]
     new_name = update.message.text
-    student_id = edit_data[user_id]["student_id"]
-    context.bot_data['db'].update_student_name(student_id, new_name)
     
-    await update.message.reply_text("✅ Имя студента успешно изменено!")
-    del edit_data[user_id]
+    db = context.bot_data['db']
+    db.update_student_name(student_id, new_name)
     
-    await admin_menu(update, context)
+    await update.message.reply_text(
+        f"✅ Имя успешно изменено на: {new_name}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
+        ]])
+    )
     return ConversationHandler.END
 
-async def handle_edit_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка новой ссылки на занятие"""
+async def handle_edit_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает изменение ссылки ученика"""
     user_id = update.effective_user.id
-    if user_id not in edit_data or edit_data[user_id]["type"] != "link":
-        await update.message.reply_text("❌ Ошибка редактирования. Начните сначала.")
-        await admin_menu(update, context)
+    if user_id not in temp_data:
+        await update.message.reply_text("❌ Ошибка: данные не найдены")
         return ConversationHandler.END
-        
+    
+    student_id = temp_data[user_id]["student_id"]
     new_link = update.message.text
-    student_id = edit_data[user_id]["student_id"]
-    context.bot_data['db'].update_student_link(student_id, new_link)
     
-    await update.message.reply_text("✅ Ссылка на занятие успешно изменена!")
-    del edit_data[user_id]
+    db = context.bot_data['db']
+    db.update_student_link(student_id, new_link)
     
-    await admin_menu(update, context)
+    await update.message.reply_text(
+        f"✅ Ссылка успешно изменена на: {new_link}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
+        ]])
+    )
     return ConversationHandler.END
 
 async def handle_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):

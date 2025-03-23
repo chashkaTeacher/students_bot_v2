@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
@@ -49,7 +49,8 @@ def migrate_database():
                     title VARCHAR NOT NULL,
                     link VARCHAR NOT NULL,
                     exam_type VARCHAR NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    file_path VARCHAR
                 )
             """))
             # Создаем уникальный индекс
@@ -58,4 +59,19 @@ def migrate_database():
                 ON homework (title, exam_type)
             """))
             connection.commit()
-            print("✅ Миграция успешно выполнена: создана таблица homework") 
+            print("✅ Миграция успешно выполнена: создана таблица homework")
+    else:
+        # Проверяем наличие столбца file_path в таблице homework
+        with engine.connect() as connection:
+            result = connection.execute(text("""
+                SELECT name FROM pragma_table_info('homework') 
+                WHERE name = 'file_path'
+            """))
+            
+            if not result.fetchone():
+                connection.execute(text("""
+                    ALTER TABLE homework 
+                    ADD COLUMN file_path VARCHAR
+                """))
+                connection.commit()
+                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу homework") 

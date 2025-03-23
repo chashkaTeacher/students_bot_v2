@@ -1,6 +1,5 @@
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, func, Boolean, Enum, UniqueConstraint
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 import enum
 import random
@@ -40,6 +39,7 @@ class Homework(Base):
     link = Column(String, nullable=False)
     exam_type = Column(Enum(ExamType), nullable=False)
     created_at = Column(DateTime, default=func.now())
+    file_path = Column(String, nullable=True)  # Путь к файлу домашнего задания
     
     # Создаем уникальный индекс для комбинации title и exam_type
     __table_args__ = (
@@ -228,7 +228,7 @@ class Database:
         finally:
             session.close()
 
-    def add_homework(self, title: str, link: str, exam_type: ExamType) -> bool:
+    def add_homework(self, title: str, link: str, exam_type: ExamType, file_path: str = None) -> bool:
         """Добавляет новое домашнее задание"""
         session = self.Session()
         try:
@@ -244,7 +244,8 @@ class Database:
             homework = Homework(
                 title=title,
                 link=link,
-                exam_type=exam_type
+                exam_type=exam_type,
+                file_path=file_path
             )
             session.add(homework)
             session.commit()
@@ -271,7 +272,7 @@ class Database:
         finally:
             session.close()
 
-    def update_homework(self, homework_id: int, title: str = None, link: str = None, exam_type: ExamType = None) -> bool:
+    def update_homework(self, homework_id: int, title: str = None, link: str = None, exam_type: ExamType = None, file_path: str = None) -> bool:
         """Обновляет информацию о домашнем задании"""
         session = self.Session()
         try:
@@ -295,6 +296,8 @@ class Database:
                 homework.link = link
             if exam_type:
                 homework.exam_type = exam_type
+            if file_path:
+                homework.file_path = file_path
 
             session.commit()
             return True

@@ -187,4 +187,111 @@ async def handle_display_name_change(update: Update, context: ContextTypes.DEFAU
         await asyncio.sleep(2)
         await confirm_message.delete()
     
+    return ConversationHandler.END
+
+async def show_student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает меню управления учениками"""
+    query = update.callback_query
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 Добавить ученика", callback_data="student_add"),
+            InlineKeyboardButton("📋 Список учеников", callback_data="student_list")
+        ],
+        [
+            InlineKeyboardButton("✏️ Редактировать", callback_data="student_edit"),
+            InlineKeyboardButton("❌ Удалить", callback_data="student_delete")
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+
+async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    action, student_id = query.data.split("_")[1:]  # student_edit_123 -> ["student", "edit", "123"]
+    
+    if action == "edit":
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Изменить имя", callback_data=f"student_edit_name_{student_id}"),
+                InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"student_edit_link_{student_id}")
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+        ]
+
+async def handle_student_edit_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает выбор действия при редактировании"""
+    query = update.callback_query
+    await query.answer()
+    
+    parts = query.data.split("_")  # student_edit_link_123 -> ["student", "edit", "link", "123"]
+    action = parts[2]
+    student_id = int(parts[3])
+    
+    user_id = update.effective_user.id
+    if user_id not in temp_data:
+        temp_data[user_id] = {}
+    temp_data[user_id]["student_id"] = student_id
+    
+    db = Database()
+    student = db.get_student_by_id(student_id)
+    
+    if action == "link":
+        await query.edit_message_text(
+            text=f"🔗 Введите новую ссылку для ученика:\n"
+                 f"Текущая ссылка: {student.lesson_link}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Отмена", callback_data="admin_back")
+            ]])
+        )
+        return EDIT_LINK
+    else:  # action == "name"
+        await query.edit_message_text(
+            text=f"📝 Введите новое имя для ученика:\n"
+                 f"Текущее имя: {student.name}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Отмена", callback_data="admin_back")
+            ]])
+        )
+        return EDIT_NAME
+
+async def handle_student_link_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает изменение ссылки ученика"""
+    user_id = update.effective_user.id
+    if user_id not in temp_data or "student_id" not in temp_data[user_id]:
+        await update.message.reply_text(
+            text="❌ Ошибка: данные о студенте не найдены",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    student_id = temp_data[user_id]["student_id"]
+    new_link = update.message.text
+    
+    db = Database()
+    student = db.get_student_by_id(student_id)
+    if not student:
+        await update.message.reply_text(
+            text="❌ Ошибка: ученик не найден",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    # Обновляем ссылку в базе данных
+    db.update_student_lesson_link(student_id, new_link)
+    
+    # Отправляем подтверждение
+    await update.message.reply_text(
+        text=f"✅ Ссылка успешно обновлена!\n\n"
+             f"👤 Ученик: {student.name}\n"
+             f"🔗 Новая ссылка: {new_link}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
+        ]])
+    )
     return ConversationHandler.END 
