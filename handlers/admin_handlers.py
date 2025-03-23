@@ -394,6 +394,37 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
         
     elif query.data.startswith("delete_"):
+        # Проверяем, является ли это удалением заметки
+        if query.data.startswith("delete_note_"):
+            student_id = int(query.data.split("_")[2])
+            student = context.bot_data['db'].get_student_by_id(student_id)
+            if student:
+                if context.bot_data['db'].delete_student_note(student_id):
+                    await query.answer("✅ Заметка успешно удалена!")
+                else:
+                    await query.answer("❌ Ошибка при удалении заметки")
+                
+                # Возвращаемся к меню редактирования студента
+                await query.edit_message_text(
+                    f"Выберите, что хотите изменить для студента {student.name}:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("👤 Изменить имя", callback_data=f"edit_name_{student_id}"),
+                            InlineKeyboardButton("📚 Изменить экзамен", callback_data=f"edit_exam_{student_id}")
+                        ],
+                        [
+                            InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
+                            InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{student_id}")
+                        ],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_type_{student.exam_type.name}")]
+                    ])
+                )
+            else:
+                await query.answer("❌ Студент не найден")
+                await admin_menu(update, context)
+            return ConversationHandler.END
+        
+        # Обработка удаления студента
         student_id = int(query.data.split("_")[1])
         student = context.bot_data['db'].get_student_by_id(student_id)
         if student:
@@ -503,9 +534,16 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             [
                 InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
                 InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{student_id}")
-            ],
-            [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_type_{student.exam_type.name}")]
+            ]
         ]
+        
+        # Добавляем кнопку удаления заметки только если она есть
+        if student.notes:
+            keyboard.append([
+                InlineKeyboardButton("❌ Удалить заметку", callback_data=f"delete_note_{student_id}")
+            ])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"edit_type_{student.exam_type.name}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.message.edit_text(
@@ -534,6 +572,35 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return ADD_NOTE
         await admin_menu(update, context)
+        return ConversationHandler.END
+
+    elif query.data.startswith("delete_note_"):
+        student_id = int(query.data.split("_")[2])
+        student = context.bot_data['db'].get_student_by_id(student_id)
+        if student:
+            if context.bot_data['db'].delete_student_note(student_id):
+                await query.answer("✅ Заметка успешно удалена!")
+            else:
+                await query.answer("❌ Ошибка при удалении заметки")
+            
+            # Возвращаемся к меню редактирования студента
+            await query.edit_message_text(
+                f"Выберите, что хотите изменить для студента {student.name}:",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("👤 Изменить имя", callback_data=f"edit_name_{student_id}"),
+                        InlineKeyboardButton("📚 Изменить экзамен", callback_data=f"edit_exam_{student_id}")
+                    ],
+                    [
+                        InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
+                        InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{student_id}")
+                    ],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_type_{student.exam_type.name}")]
+                ])
+            )
+        else:
+            await query.answer("❌ Студент не найден")
+            await admin_menu(update, context)
         return ConversationHandler.END
 
     # Для всех остальных случаев

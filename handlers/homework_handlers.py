@@ -125,16 +125,35 @@ async def handle_exam_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             temp_data[user_id]["homeworks"] = homeworks
             temp_data[user_id]["current_page"] = 0
             await show_homework_page(update, context, user_id)
-            return ConversationHandler.END
+            return SELECT_HOMEWORK
         
-        # Для edit и delete оставляем старую логику
+        # Для edit и delete формируем клавиатуру по два задания в строку
         keyboard = []
+        current_row = []
+        
         for hw in homeworks:
             icon = "✏️" if action == "edit" else "❌"
-            keyboard.append([InlineKeyboardButton(
-                f"{icon} {hw.title}", 
+            button_text = f"{icon} {hw.title}"
+            button = InlineKeyboardButton(
+                button_text, 
                 callback_data=f"homework_{action}_{hw.id}"
-            )])
+            )
+            
+            # Если название длиннее 15 символов, добавляем кнопку в новую строку
+            if len(hw.title) > 15:
+                if current_row:  # Если есть незавершенная строка
+                    keyboard.append(current_row)
+                    current_row = []
+                keyboard.append([button])  # Добавляем длинную кнопку в отдельную строку
+            else:
+                current_row.append(button)
+                if len(current_row) == 2:  # Если в текущей строке две кнопки
+                    keyboard.append(current_row)
+                    current_row = []
+        
+        # Добавляем оставшиеся кнопки, если есть
+        if current_row:
+            keyboard.append(current_row)
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -604,61 +623,128 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
 async def show_homework_page(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
     """Показывает текущую страницу списка заданий"""
     query = update.callback_query
+    
+    # Получаем данные из временного хранилища
+    if user_id not in temp_data or 'homeworks' not in temp_data[user_id]:
+        # Если данных нет, возвращаемся в меню
+        await query.edit_message_text(
+            "❌ Ошибка: данные о заданиях не найдены",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 В меню", callback_data="admin_back")
+            ]])
+        )
+        return
+
     homeworks = temp_data[user_id]["homeworks"]
-    current_page = temp_data[user_id]["current_page"]
+    current_page = temp_data[user_id].get("current_page", 0)  # По умолчанию первая страница
     exam_type = temp_data[user_id]["exam_type"]
-    
+
     # Настройки пагинации
-    items_per_page = 5
-    start_idx = current_page * items_per_page
-    end_idx = start_idx + items_per_page
-    total_pages = (len(homeworks) + items_per_page - 1) // items_per_page
+    ITEMS_PER_PAGE = 5
+    total_items = len(homeworks)
+    total_pages = (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     
-    # Формируем текст списка заданий
-    text = f"📚 Список заданий для {ExamType[exam_type].value}\n\n"
-    for i, hw in enumerate(homeworks[start_idx:end_idx], start=start_idx + 1):
-        text += f"{i}. 📝 {hw.title}\n"
-        text += f"   🔗 {hw.link}\n"
-        text += f"   {'📎 Есть файл' if hw.file_path else '❌ Нет файла'}\n"
-        text += "\n"
+    # Проверяем валидность текущей страницы
+    if current_page >= total_pages:
+        current_page = total_pages - 1
+    if current_page < 0:
+        current_page = 0
     
-    text += f"\nСтраница {current_page + 1} из {total_pages}"
+    # Обновляем current_page в temp_data
+    temp_data[user_id]["current_page"] = current_page
+
+    # Вычисляем индексы для текущей страницы
+    start_idx = current_page * ITEMS_PER_PAGE
+    end_idx = min(start_idx + ITEMS_PER_PAGE, total_items)
     
-    # Формируем клавиатуру для навигации
+    # Формируем текст сообщения
+    message_lines = [
+        f"📚 Список заданий для {ExamType[exam_type].value}",
+        f"Всего заданий: {total_items}\n"
+    ]
+    
+    # Добавляем задания
+    for i, hw in enumerate(homeworks[start_idx:end_idx], start=1):
+        # Получаем имя файла, если он есть
+        file_info = "❌ Нет файла"
+        if hw.file_path:
+            file_name = os.path.basename(hw.file_path)
+            file_info = f"📎 Файл: {file_name}"
+        
+        # Форматируем ссылку, обрезая если она слишком длинная
+        link = hw.link
+        if len(link) > 50:
+            link = link[:47] + "..."
+        
+        message_lines.extend([
+            f"\n{start_idx + i}. 📝 {hw.title}",
+            f"└─ 🔗 {link}",
+            f"└─ {file_info}"
+        ])
+
+    # Добавляем информацию о страницах
+    message_lines.extend([
+        "",  # Пустая строка для разделения
+        f"📄 Страница {current_page + 1} из {total_pages}",
+        f"Показано заданий: {start_idx + 1}-{end_idx} из {total_items}"
+    ])
+    
+    # Формируем клавиатуру
     keyboard = []
-    nav_buttons = []
     
+    # Кнопки навигации
+    nav_row = []
     if current_page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data="homework_page_prev"))
+        nav_row.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data="homework_page_prev"))
     if current_page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data="homework_page_next"))
+        nav_row.append(InlineKeyboardButton("Следующая ➡️", callback_data="homework_page_next"))
+    if nav_row:
+        keyboard.append(nav_row)
     
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+    # Кнопка возврата в меню
     keyboard.append([InlineKeyboardButton("🔙 В меню", callback_data="admin_back")])
     
+    # Отправляем или обновляем сообщение
+    message_text = "\n".join(message_lines)
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if query:
-        await query.edit_message_text(text=text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text=text, reply_markup=reply_markup)
+    try:
+        if query:
+            await query.edit_message_text(text=message_text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text=message_text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            await query.answer("Вы уже на этой странице")
+        else:
+            raise
+    
+    return SELECT_HOMEWORK
 
 async def handle_page_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает навигацию по страницам списка заданий"""
     query = update.callback_query
-    await query.answer()
-    
     user_id = update.effective_user.id
+    
+    # Проверяем наличие данных
+    if user_id not in temp_data or 'homeworks' not in temp_data[user_id]:
+        await query.answer("❌ Ошибка: данные не найдены")
+        return ConversationHandler.END
+
+    # Определяем направление навигации
     action = query.data.split("_")[-1]
+    current_page = temp_data[user_id].get("current_page", 0)
     
+    # Изменяем номер страницы
     if action == "prev":
-        temp_data[user_id]["current_page"] -= 1
+        temp_data[user_id]["current_page"] = max(0, current_page - 1)
     elif action == "next":
-        temp_data[user_id]["current_page"] += 1
-    
+        total_pages = (len(temp_data[user_id]["homeworks"]) + 4) // 5  # 5 элементов на странице
+        temp_data[user_id]["current_page"] = min(total_pages - 1, current_page + 1)
+
+    # Показываем обновленную страницу
     await show_homework_page(update, context, user_id)
-    return ConversationHandler.END
+    return SELECT_HOMEWORK
 
 async def handle_admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает возврат в главное меню администратора"""

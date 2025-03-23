@@ -117,7 +117,8 @@ def main():
             CallbackQueryHandler(handle_admin_actions, pattern="^edit_link_"),
             CallbackQueryHandler(handle_admin_actions, pattern="^add_note_"),
             CallbackQueryHandler(handle_admin_actions, pattern="^edit_type_"),
-            CallbackQueryHandler(handle_admin_actions, pattern="^edit_student_")
+            CallbackQueryHandler(handle_admin_actions, pattern="^edit_student_"),
+            CallbackQueryHandler(handle_admin_actions, pattern="^delete_note_")
         ],
         states={
             EDIT_NAME: [
@@ -189,7 +190,7 @@ def main():
             SELECT_HOMEWORK: [
                 CallbackQueryHandler(handle_homework_selection, pattern="^homework_(edit|delete)_\d+$"),
                 CallbackQueryHandler(handle_edit_action, pattern="^homework_edit_(title|link|file)_\d+$"),
-                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_\d+$"),
+                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_(next|prev)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             EDIT_TITLE: [
@@ -210,6 +211,10 @@ def main():
             ],
             WAIT_FOR_FILE: [
                 MessageHandler(filters.Document.ALL, handle_file_upload),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            ConversationHandler.END: [
+                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_(next|prev)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ]
         },

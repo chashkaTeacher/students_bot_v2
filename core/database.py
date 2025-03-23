@@ -4,6 +4,7 @@ from datetime import datetime
 import enum
 import random
 import string
+import re
 
 Base = declarative_base()
 
@@ -43,8 +44,22 @@ class Homework(Base):
     
     # Создаем уникальный индекс для комбинации title и exam_type
     __table_args__ = (
-        UniqueConstraint('title', 'exam_type', name='unique_title_exam'),
+        UniqueConstraint('title', 'exam_type', name='unique_title_exam_type'),
     )
+
+    def get_task_number(self):
+        """Извлекает номер задания из заголовка"""
+        # Ищем числа в заголовке
+        numbers = re.findall(r'\d+(?:-\d+)?', self.title)
+        if not numbers:
+            return float('inf')  # Если нет номера, помещаем в конец списка
+        
+        # Берем первое найденное число
+        number = numbers[0]
+        if '-' in number:
+            # Если это диапазон (например, "19-21"), берем первое число
+            number = number.split('-')[0]
+        return int(number)
 
 class Database:
     def __init__(self):
@@ -205,6 +220,19 @@ class Database:
         finally:
             session.close()
 
+    def delete_student_note(self, student_id: int):
+        """Удаляет заметку студента"""
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                student.notes = None
+                session.commit()
+                return True
+            return False
+        finally:
+            session.close()
+
     def update_student_settings(self, student_id: int, display_name: str = None):
         """Обновляет настройки студента"""
         session = self.Session()
@@ -257,10 +285,12 @@ class Database:
             session.close()
 
     def get_homework_by_exam(self, exam_type: ExamType) -> list:
-        """Получает список домашних заданий по типу экзамена"""
+        """Получает отсортированный список домашних заданий по типу экзамена"""
         session = self.Session()
         try:
-            return session.query(Homework).filter_by(exam_type=exam_type).all()
+            homeworks = session.query(Homework).filter_by(exam_type=exam_type).all()
+            # Сортируем задания по номеру
+            return sorted(homeworks, key=lambda hw: hw.get_task_number())
         finally:
             session.close()
 
