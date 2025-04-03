@@ -61,6 +61,35 @@ class Homework(Base):
             number = number.split('-')[0]
         return int(number)
 
+class Note(Base):
+    __tablename__ = 'notes'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    link = Column(String, nullable=False)
+    exam_type = Column(Enum(ExamType), nullable=False)
+    created_at = Column(DateTime, default=func.now())
+    file_path = Column(String, nullable=True)  # Путь к файлу конспекта
+    
+    # Создаем уникальный индекс для комбинации title и exam_type
+    __table_args__ = (
+        UniqueConstraint('title', 'exam_type', name='unique_note_title_exam_type'),
+    )
+
+    def get_task_number(self):
+        """Извлекает номер задания из заголовка"""
+        # Ищем числа в заголовке
+        numbers = re.findall(r'\d+(?:-\d+)?', self.title)
+        if not numbers:
+            return float('inf')  # Если нет номера, помещаем в конец списка
+        
+        # Берем первое найденное число
+        number = numbers[0]
+        if '-' in number:
+            # Если это диапазон (например, "19-21"), берем первое число
+            number = number.split('-')[0]
+        return int(number)
+
 class Database:
     def __init__(self):
         self.engine = create_engine('sqlite:///students.db')
@@ -344,6 +373,103 @@ class Database:
             homework = session.query(Homework).filter_by(id=homework_id).first()
             if homework:
                 session.delete(homework)
+                session.commit()
+                return True
+            return False
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def add_note(self, title: str, link: str, exam_type: ExamType, file_path: str = None) -> bool:
+        """Добавляет новый конспект"""
+        session = self.Session()
+        try:
+            # Проверяем уникальность названия для выбранного экзамена
+            existing = session.query(Note).filter_by(
+                title=title,
+                exam_type=exam_type
+            ).first()
+            
+            if existing:
+                return False
+            
+            note = Note(
+                title=title,
+                link=link,
+                exam_type=exam_type,
+                file_path=file_path
+            )
+            session.add(note)
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_notes_by_exam(self, exam_type: ExamType) -> list:
+        """Получает отсортированный список конспектов по типу экзамена"""
+        session = self.Session()
+        try:
+            notes = session.query(Note).filter_by(exam_type=exam_type).all()
+            # Сортируем конспекты по номеру
+            return sorted(notes, key=lambda note: note.get_task_number())
+        finally:
+            session.close()
+
+    def get_note_by_id(self, note_id: int) -> Note:
+        """Получает конспект по ID"""
+        session = self.Session()
+        try:
+            return session.query(Note).filter_by(id=note_id).first()
+        finally:
+            session.close()
+
+    def update_note(self, note_id: int, title: str = None, link: str = None, exam_type: ExamType = None, file_path: str = None) -> bool:
+        """Обновляет информацию о конспекте"""
+        session = self.Session()
+        try:
+            note = session.query(Note).filter_by(id=note_id).first()
+            if not note:
+                return False
+
+            # Если меняется название или тип экзамена, проверяем уникальность
+            if (title or exam_type) and (title != note.title or exam_type != note.exam_type):
+                existing = session.query(Note).filter_by(
+                    title=title or note.title,
+                    exam_type=exam_type or note.exam_type
+                ).filter(Note.id != note_id).first()
+                
+                if existing:
+                    return False
+
+            if title:
+                note.title = title
+            if link:
+                note.link = link
+            if exam_type:
+                note.exam_type = exam_type
+            if file_path:
+                note.file_path = file_path
+
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def delete_note(self, note_id: int) -> bool:
+        """Удаляет конспект"""
+        session = self.Session()
+        try:
+            note = session.query(Note).filter_by(id=note_id).first()
+            if note:
+                session.delete(note)
                 session.commit()
                 return True
             return False

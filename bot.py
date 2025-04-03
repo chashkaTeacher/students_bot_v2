@@ -12,7 +12,8 @@ from handlers.admin_handlers import (
     enter_name, choose_exam, enter_link, cancel,
     handle_edit_name, handle_edit_link, handle_edit_exam, handle_add_note,
     ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE,
-    EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE
+    EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE,
+    tasks_menu
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -21,23 +22,46 @@ from handlers.student_handlers import (
 )
 from handlers.homework_handlers import (
     show_homework_menu,
-    show_exam_menu,
-    handle_exam_choice,
+    show_exam_menu as show_homework_exam_menu,
+    handle_exam_choice as handle_homework_exam_choice,
     handle_homework_title,
     handle_homework_link,
     handle_homework_selection,
-    handle_edit_action,
-    handle_edit_title,
+    handle_edit_action as handle_homework_edit_action,
+    handle_edit_title as handle_homework_edit_title,
     handle_homework_edit_link,
-    handle_delete_confirmation,
-    handle_page_navigation,
-    handle_file_choice,
-    handle_file_upload,
+    handle_delete_confirmation as handle_homework_delete_confirmation,
+    handle_page_navigation as handle_homework_page_navigation,
+    handle_file_choice as handle_homework_file_choice,
+    handle_file_upload as handle_homework_file_upload,
     handle_admin_back,
     CHOOSE_EXAM as HOMEWORK_CHOOSE_EXAM,
-    ENTER_TITLE, ENTER_LINK as HOMEWORK_ENTER_LINK,
+    ENTER_TITLE as HOMEWORK_ENTER_TITLE,
+    ENTER_LINK as HOMEWORK_ENTER_LINK,
     CONFIRM_DELETE as HOMEWORK_CONFIRM_DELETE,
     SELECT_HOMEWORK, EDIT_TITLE, EDIT_LINK,
+    ASK_FOR_FILE, WAIT_FOR_FILE
+)
+from handlers.notes_handlers import (
+    show_notes_menu,
+    show_exam_menu as show_notes_exam_menu,
+    handle_exam_choice as handle_notes_exam_choice,
+    handle_note_title,
+    handle_note_link,
+    handle_note_selection,
+    handle_edit_action as handle_notes_edit_action,
+    handle_edit_title as handle_notes_edit_title,
+    handle_note_edit_link,
+    handle_delete_confirmation as handle_notes_delete_confirmation,
+    handle_page_navigation as handle_notes_page_navigation,
+    handle_file_choice as handle_notes_file_choice,
+    handle_file_upload as handle_notes_file_upload,
+    handle_admin_back,
+    CHOOSE_EXAM as NOTES_CHOOSE_EXAM,
+    ENTER_TITLE as NOTES_ENTER_TITLE,
+    ENTER_LINK as NOTES_ENTER_LINK,
+    CONFIRM_DELETE as NOTES_CONFIRM_DELETE,
+    SELECT_NOTE, EDIT_TITLE, EDIT_LINK,
     ASK_FOR_FILE, WAIT_FOR_FILE
 )
 from handlers.common_handlers import handle_start
@@ -176,10 +200,10 @@ def main():
         ],
         states={
             HOMEWORK_CHOOSE_EXAM: [
-                CallbackQueryHandler(handle_exam_choice, pattern="^homework_exam_(OGE|EGE|SCHOOL)$"),
+                CallbackQueryHandler(handle_homework_exam_choice, pattern="^homework_exam_(OGE|EGE|SCHOOL)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
-            ENTER_TITLE: [
+            HOMEWORK_ENTER_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_title),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
@@ -189,44 +213,101 @@ def main():
             ],
             SELECT_HOMEWORK: [
                 CallbackQueryHandler(handle_homework_selection, pattern="^homework_(edit|delete)_\d+$"),
-                CallbackQueryHandler(handle_edit_action, pattern="^homework_edit_(title|link|file)_\d+$"),
-                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_(next|prev)$"),
+                CallbackQueryHandler(handle_homework_edit_action, pattern="^homework_edit_(title|link|file)_\d+$"),
+                CallbackQueryHandler(handle_homework_page_navigation, pattern="^homework_page_(next|prev)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             EDIT_TITLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_title),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_edit_title),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             EDIT_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_homework_edit_link),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
-            CONFIRM_DELETE: [
-                CallbackQueryHandler(handle_delete_confirmation, pattern="^homework_confirm_delete_\d+$"),
+            HOMEWORK_CONFIRM_DELETE: [
+                CallbackQueryHandler(handle_homework_delete_confirmation, pattern="^homework_confirm_delete_\d+$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             ASK_FOR_FILE: [
-                CallbackQueryHandler(handle_file_choice, pattern="^homework_file_(yes|no)$"),
+                CallbackQueryHandler(handle_homework_file_choice, pattern="^homework_file_(yes|no)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             WAIT_FOR_FILE: [
-                MessageHandler(filters.Document.ALL, handle_file_upload),
+                MessageHandler(filters.Document.ALL, handle_homework_file_upload),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ],
             ConversationHandler.END: [
-                CallbackQueryHandler(handle_page_navigation, pattern="^homework_page_(next|prev)$"),
+                CallbackQueryHandler(handle_homework_page_navigation, pattern="^homework_page_(next|prev)$"),
                 CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
             ]
         },
         fallbacks=[CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")]
     )
 
-    # Добавляем обработчики в правильном порядке
-    application.add_handler(main_handler)  # Главный обработчик /start и ввода пароля
-    application.add_handler(add_student_handler)  # Обработчик добавления студента
-    application.add_handler(edit_student_handler)  # Обработчик редактирования студента
-    application.add_handler(delete_student_handler)  # Обработчик удаления студента
-    application.add_handler(homework_handler)  # Обработчик домашних заданий
+    # Создаем обработчик для управления конспектами
+    notes_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(show_notes_menu, pattern="^admin_notes$"),
+            CallbackQueryHandler(show_notes_menu, pattern="^notes_(add|list|edit|delete)$")
+        ],
+        states={
+            NOTES_CHOOSE_EXAM: [
+                CallbackQueryHandler(handle_notes_exam_choice, pattern="^notes_exam_(OGE|EGE|SCHOOL)$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            NOTES_ENTER_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_title),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            NOTES_ENTER_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_link),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            SELECT_NOTE: [
+                CallbackQueryHandler(handle_note_selection, pattern="^notes_(edit|delete)_\d+$"),
+                CallbackQueryHandler(handle_notes_edit_action, pattern="^notes_edit_(title|link|file)_\d+$"),
+                CallbackQueryHandler(handle_notes_page_navigation, pattern="^notes_page_(next|prev)$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            EDIT_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes_edit_title),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            EDIT_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_edit_link),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            ASK_FOR_FILE: [
+                CallbackQueryHandler(handle_notes_file_choice, pattern="^notes_file_(yes|no)$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            WAIT_FOR_FILE: [
+                MessageHandler(filters.Document.ALL, handle_notes_file_upload),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ],
+            NOTES_CONFIRM_DELETE: [
+                CallbackQueryHandler(handle_notes_delete_confirmation, pattern="^notes_confirm_delete_\d+$"),
+                CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(handle_admin_back, pattern="^admin_back$")
+        ],
+        name="notes",
+        persistent=False
+    )
+
+    # Регистрируем обработчики
+    application.add_handler(main_handler)
+    application.add_handler(add_student_handler)
+    application.add_handler(edit_student_handler)
+    application.add_handler(delete_student_handler)
+    application.add_handler(homework_handler)  # Перемещаем обработчик заданий выше
+    application.add_handler(notes_handler)     # Обработчик конспектов после заданий
+    application.add_handler(CommandHandler("start", handle_start))
+    application.add_handler(CommandHandler("admin", admin_menu))
     application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_)"))  # Общий обработчик админа
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
     

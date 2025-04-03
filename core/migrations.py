@@ -74,4 +74,40 @@ def migrate_database():
                     ADD COLUMN file_path VARCHAR
                 """))
                 connection.commit()
-                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу homework") 
+                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу homework")
+
+    # Создаем таблицу notes, если её нет
+    if not inspector.has_table("notes"):
+        with engine.connect() as connection:
+            connection.execute(text("""
+                CREATE TABLE notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title VARCHAR NOT NULL,
+                    link VARCHAR NOT NULL,
+                    exam_type VARCHAR NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    file_path VARCHAR
+                )
+            """))
+            # Создаем уникальный индекс
+            connection.execute(text("""
+                CREATE UNIQUE INDEX unique_note_title_exam 
+                ON notes (title, exam_type)
+            """))
+            connection.commit()
+            print("✅ Миграция успешно выполнена: создана таблица notes")
+    else:
+        # Проверяем наличие столбца file_path в таблице notes
+        with engine.connect() as connection:
+            result = connection.execute(text("""
+                SELECT name FROM pragma_table_info('notes') 
+                WHERE name = 'file_path'
+            """))
+            
+            if not result.fetchone():
+                connection.execute(text("""
+                    ALTER TABLE notes 
+                    ADD COLUMN file_path VARCHAR
+                """))
+                connection.commit()
+                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу notes") 

@@ -53,4 +53,7 @@ tmp/
 temp/
 
 # Homework files
-homework_files/ 
+homework_files/
+
+# Notes files
+notes_files/ 
