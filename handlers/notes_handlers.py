@@ -19,13 +19,21 @@ NOTES_FILES_DIR = "notes_files"
 if not os.path.exists(NOTES_FILES_DIR):
     os.makedirs(NOTES_FILES_DIR)
 
+async def safe_answer_query(query):
+    """Безопасно отвечает на callback query, игнорируя ошибки устаревших запросов"""
+    try:
+        await query.answer()
+    except Exception as e:
+        # Игнорируем ошибку устаревшего query
+        pass
+
 async def show_notes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает меню управления конспектами"""
     query = update.callback_query
     
     if query and query.data != "admin_notes":
         action = query.data.split("_")[1]  # notes_add -> add
-        await query.answer()
+        await safe_answer_query(query)
         return await show_exam_menu(update, context, action)
     
     keyboard = [
@@ -59,7 +67,7 @@ async def show_notes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def show_exam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> int:
     """Показывает меню выбора типа экзамена"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     user_id = update.effective_user.id
     temp_data[user_id] = {"action": action}
@@ -91,7 +99,7 @@ async def show_exam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, act
 async def handle_exam_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор типа экзамена"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     user_id = update.effective_user.id
     exam_type = query.data.split("_")[-1]
@@ -204,7 +212,7 @@ async def handle_note_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def handle_file_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор загрузки файла"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     user_id = update.effective_user.id
     data = temp_data[user_id]
@@ -370,7 +378,7 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_note_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор конспекта для редактирования или удаления"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     action, note_id = query.data.split("_")[1:]
     user_id = update.effective_user.id
@@ -431,7 +439,7 @@ async def handle_note_selection(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_edit_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор действия при редактировании"""
     query = update.callback_query
-    await query.answer()
+    await safe_answer_query(query)
     
     parts = query.data.split("_")  # notes_edit_link_123 -> ["notes", "edit", "link", "123"]
     action = parts[2]

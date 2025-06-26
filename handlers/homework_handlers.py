@@ -129,31 +129,20 @@ async def handle_exam_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Для edit и delete формируем клавиатуру по два задания в строку
         keyboard = []
-        current_row = []
         
-        for hw in homeworks:
-            icon = "✏️" if action == "edit" else "❌"
-            button_text = f"{icon} {hw.title}"
-            button = InlineKeyboardButton(
-                button_text, 
-                callback_data=f"homework_{action}_{hw.id}"
-            )
-            
-            # Если название длиннее 15 символов, добавляем кнопку в новую строку
-            if len(hw.title) > 15:
-                if current_row:  # Если есть незавершенная строка
-                    keyboard.append(current_row)
-                    current_row = []
-                keyboard.append([button])  # Добавляем длинную кнопку в отдельную строку
-            else:
-                current_row.append(button)
-                if len(current_row) == 2:  # Если в текущей строке две кнопки
-                    keyboard.append(current_row)
-                    current_row = []
-        
-        # Добавляем оставшиеся кнопки, если есть
-        if current_row:
-            keyboard.append(current_row)
+        for i in range(0, len(homeworks), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(homeworks):
+                    hw = homeworks[i + j]
+                    icon = "✏️" if action == "edit" else "❌"
+                    button_text = f"{icon} {hw.title}"
+                    button = InlineKeyboardButton(
+                        button_text, 
+                        callback_data=f"homework_{action}_{hw.id}"
+                    )
+                    row.append(button)
+            keyboard.append(row)
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)

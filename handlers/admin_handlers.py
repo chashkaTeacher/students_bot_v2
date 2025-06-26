@@ -1,6 +1,8 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-from core.database import ExamType
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from core.database import Database, ExamType
+from handlers.student_handlers import student_menu, send_student_menu_by_chat_id
+import os
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -14,9 +16,20 @@ edit_data = {}
 # Временное хранилище для хранения ID студента при редактировании
 temp_data = {}
 
+GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK = range(100, 103)
+
+give_homework_temp = {}
+
+GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK = 200, 201
+
+give_variant_temp = {}
+
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
     """Показывает меню администратора"""
     keyboard = [
+        [
+            InlineKeyboardButton("🎯 Выдать домашнее задание", callback_data="admin_give_homework")
+        ],
         [
             InlineKeyboardButton("👥 Управление учениками", callback_data="admin_students"),
             InlineKeyboardButton("📚 Управление заданиями", callback_data="admin_homework")
@@ -216,7 +229,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает действия администратора"""
     query = update.callback_query
-    await query.answer()
+    
+    # Обрабатываем возможную ошибку устаревшего callback query
+    try:
+        await query.answer()
+    except Exception as e:
+        # Игнорируем ошибку устаревшего query
+        pass
     
     action = query.data
     
@@ -256,6 +275,16 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if query.data == "admin_students":
         await students_menu(update, context)
+        return ConversationHandler.END
+    elif query.data == "admin_give_homework":
+        await give_homework_menu(update, context)
+        return ConversationHandler.END
+    elif query.data == "admin_give_homework_task":
+        from handlers.homework_handlers import show_homework_menu
+        await show_homework_menu(update, context)
+        return ConversationHandler.END
+    elif query.data == "admin_give_homework_variant":
+        await handle_give_homework_variant(update, context)
         return ConversationHandler.END
     elif query.data == "admin_notes":
         await notes_menu(update, context)
@@ -303,12 +332,17 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
         
         keyboard = []
-        for student in students:
-            note_text = f" ({student.notes})" if student.notes else ""
-            keyboard.append([InlineKeyboardButton(
-                f"👤 {student.name}{note_text}",
-                callback_data=f"student_info_{student.id}"
-            )])
+        for i in range(0, len(students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(students):
+                    student = students[i + j]
+                    note_text = f" ({student.notes})" if student.notes else ""
+                    row.append(InlineKeyboardButton(
+                        f"👤 {student.name}{note_text}",
+                        callback_data=f"student_info_{student.id}"
+                    ))
+            keyboard.append(row)
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_students_info")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -359,12 +393,17 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
         
         keyboard = []
-        for student in students:
-            note_text = f" ({student.notes})" if student.notes else ""
-            keyboard.append([InlineKeyboardButton(
-                f"❌ {student.name}{note_text}",
-                callback_data=f"delete_{student.id}"
-            )])
+        for i in range(0, len(students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(students):
+                    student = students[i + j]
+                    note_text = f" ({student.notes})" if student.notes else ""
+                    row.append(InlineKeyboardButton(
+                        f"❌ {student.name}{note_text}",
+                        callback_data=f"delete_{student.id}"
+                    ))
+            keyboard.append(row)
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_delete")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -497,12 +536,17 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
         
         keyboard = []
-        for student in students:
-            note_text = f" ({student.notes})" if student.notes else ""
-            keyboard.append([InlineKeyboardButton(
-                f"✏️ {student.name}{note_text}",
-                callback_data=f"edit_student_{student.id}"
-            )])
+        for i in range(0, len(students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(students):
+                    student = students[i + j]
+                    note_text = f" ({student.notes})" if student.notes else ""
+                    row.append(InlineKeyboardButton(
+                        f"✏️ {student.name}{note_text}",
+                        callback_data=f"edit_student_{student.id}"
+                    ))
+            keyboard.append(row)
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_edit")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -716,4 +760,184 @@ async def handle_edit_exam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if user_id in edit_data:
             del edit_data[user_id]
         await admin_menu(update, context)
-        return ConversationHandler.END 
+        return ConversationHandler.END
+
+async def give_homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
+    """Меню выдачи домашнего задания или варианта"""
+    keyboard = [
+        [
+            InlineKeyboardButton("👤 Ученику", callback_data="admin_give_homework_task"),
+            InlineKeyboardButton("📄 Вариант", callback_data="admin_give_homework_variant")
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="admin_back")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите действие:",
+        reply_markup=reply_markup
+    )
+
+async def handle_give_homework_variant(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
+    keyboard = [
+        [InlineKeyboardButton("📝 ОГЭ", callback_data="give_variant_exam_OGE"), InlineKeyboardButton("📚 ЕГЭ", callback_data="give_variant_exam_EGE")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите тип экзамена для выдачи варианта:",
+        reply_markup=reply_markup
+    )
+    return GIVE_VARIANT_CHOOSE_EXAM
+
+async def handle_give_variant_choose_exam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    exam_type = query.data.split('_')[-1]
+    user_id = query.from_user.id
+    give_variant_temp[user_id] = {"exam_type": exam_type}
+    await query.message.edit_text(
+        "Отправьте ссылку на вариант:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+    )
+    return GIVE_VARIANT_ENTER_LINK
+
+async def handle_give_variant_enter_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    link = update.message.text
+    user_id = update.effective_user.id
+    exam_type = give_variant_temp[user_id]["exam_type"]
+    db = context.bot_data['db']
+    db.add_variant(ExamType[exam_type], link)
+    # Рассылаем всем ученикам этого экзамена уведомление и меню
+    students = db.get_students_by_exam_type(ExamType[exam_type])
+    for student in students:
+        if student.telegram_id:
+            db.add_notification(student.id, 'variant', "Актуальный вариант!", link)
+            msg = await context.bot.send_message(
+                chat_id=student.telegram_id,
+                text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
+            )
+            db.add_push_message(student.id, msg.message_id)
+            # После push отправляем меню корректно по chat_id
+            await send_student_menu_by_chat_id(context, student.telegram_id)
+    await update.message.reply_text(
+        "✅ Вариант успешно выдан всем ученикам этого экзамена!",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+    )
+    give_variant_temp.pop(user_id, None)
+    return ConversationHandler.END
+
+async def give_homework_choose_exam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 ОГЭ", callback_data="give_hw_exam_OGE"),
+            InlineKeyboardButton("📚 ЕГЭ", callback_data="give_hw_exam_EGE")
+        ],
+        [InlineKeyboardButton("🏫 Школьная программа", callback_data="give_hw_exam_SCHOOL")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите тип экзамена:",
+        reply_markup=reply_markup
+    )
+    return GIVE_HOMEWORK_CHOOSE_EXAM
+
+async def give_homework_choose_student(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    exam_type = update.callback_query.data.split('_')[-1]
+    user_id = update.effective_user.id
+    give_homework_temp[user_id] = {"exam_type": exam_type}
+    db = Database()
+    students = db.get_students_by_exam_type(ExamType[exam_type])
+    if not students:
+        await update.callback_query.message.edit_text(
+            "Нет учеников для этого экзамена.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        return ConversationHandler.END
+    keyboard = []
+    for i in range(0, len(students), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(students):
+                student = students[i + j]
+                row.append(InlineKeyboardButton(student.name, callback_data=f"give_hw_student_{student.id}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите ученика:",
+        reply_markup=reply_markup
+    )
+    return GIVE_HOMEWORK_CHOOSE_STUDENT
+
+async def give_homework_choose_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    student_id = int(update.callback_query.data.split('_')[-1])
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["student_id"] = student_id
+    db = Database()
+    exam_type = give_homework_temp[user_id]["exam_type"]
+    homeworks = db.get_homework_by_exam(exam_type)
+    if not homeworks:
+        await update.callback_query.message.edit_text(
+            "Нет домашних заданий для этого экзамена.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        return ConversationHandler.END
+    keyboard = []
+    for i in range(0, len(homeworks), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(homeworks):
+                hw = homeworks[i + j]
+                row.append(InlineKeyboardButton(hw.title, callback_data=f"give_hw_task_{hw.id}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите задание для выдачи:",
+        reply_markup=reply_markup
+    )
+    return GIVE_HOMEWORK_CHOOSE_TASK
+
+async def give_homework_assign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    homework_id = int(update.callback_query.data.split('_')[-1])
+    user_id = update.effective_user.id
+    student_id = give_homework_temp[user_id]["student_id"]
+    db = Database()
+    
+    # Проверяем, было ли задание уже назначено
+    was_assigned = db.is_homework_assigned_to_student(student_id, homework_id)
+    success = db.assign_homework_to_student(student_id, homework_id)
+    
+    if success:
+        student = db.get_student_by_id(student_id)
+        homework = db.get_homework_by_id(homework_id)
+        if was_assigned:
+            message_text = "✅ Домашнее задание повторно выдано (обновлена дата назначения)!"
+        else:
+            message_text = "✅ Домашнее задание успешно выдано!"
+        # Добавляем уведомление в БД
+        if student:
+            notif_text = f"Новое домашнее задание: {homework.title}" if homework else "Новое домашнее задание!"
+            db.add_notification(student.id, 'homework', notif_text, homework.link if homework else None)
+            # Push только если есть непрочитанные уведомления
+            if db.has_unread_notifications(student.id):
+                try:
+                    msg = await context.bot.send_message(
+                        chat_id=student.telegram_id,
+                        text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
+                    )
+                    db.add_push_message(student.id, msg.message_id)
+                    # После push отправляем меню корректно по chat_id
+                    await send_student_menu_by_chat_id(context, student.telegram_id)
+                except Exception as e:
+                    print(f"Ошибка push студенту {student.id}: {e}")
+        await update.callback_query.message.edit_text(
+            message_text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+    
+    give_homework_temp.pop(user_id, None)
+    return ConversationHandler.END 

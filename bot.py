@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
-    ContextTypes, MessageHandler, filters, ConversationHandler
+    ContextTypes, MessageHandler, filters, ConversationHandler, JobQueue
 )
 from core.database import Database
 from core.migrations import migrate_database
@@ -13,7 +13,16 @@ from handlers.admin_handlers import (
     handle_edit_name, handle_edit_link, handle_edit_exam, handle_add_note,
     ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE,
     EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE,
-    tasks_menu
+    tasks_menu,
+    give_homework_choose_exam,
+    give_homework_choose_student,
+    give_homework_choose_task,
+    give_homework_assign,
+    GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK,
+    handle_give_homework_variant,
+    handle_give_variant_choose_exam,
+    handle_give_variant_enter_link,
+    GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -65,6 +74,8 @@ from handlers.notes_handlers import (
     ASK_FOR_FILE, WAIT_FOR_FILE
 )
 from handlers.common_handlers import handle_start
+from datetime import time, timedelta
+import pytz
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -299,6 +310,46 @@ def main():
         persistent=False
     )
 
+    # Создаем обработчик для выдачи домашнего задания через меню администратора
+    give_homework_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework_task$")],
+        states={
+            GIVE_HOMEWORK_CHOOSE_EXAM: [
+                CallbackQueryHandler(give_homework_choose_student, pattern="^give_hw_exam_(OGE|EGE|SCHOOL)$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
+            ],
+            GIVE_HOMEWORK_CHOOSE_STUDENT: [
+                CallbackQueryHandler(give_homework_choose_task, pattern="^give_hw_student_\d+$"),
+                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+            ],
+            GIVE_HOMEWORK_CHOOSE_TASK: [
+                CallbackQueryHandler(give_homework_assign, pattern="^give_hw_task_\d+$"),
+                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")],
+        name="give_homework",
+        persistent=False
+    )
+
+    # ConversationHandler для выдачи варианта
+    give_variant_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_give_homework_variant, pattern="^admin_give_homework_variant$")],
+        states={
+            GIVE_VARIANT_CHOOSE_EXAM: [
+                CallbackQueryHandler(handle_give_variant_choose_exam, pattern="^give_variant_exam_(OGE|EGE)$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
+            ],
+            GIVE_VARIANT_ENTER_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_give_variant_enter_link),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")],
+        name="give_variant",
+        persistent=False
+    )
+
     # Регистрируем обработчики
     application.add_handler(main_handler)
     application.add_handler(add_student_handler)
@@ -306,11 +357,32 @@ def main():
     application.add_handler(delete_student_handler)
     application.add_handler(homework_handler)  # Перемещаем обработчик заданий выше
     application.add_handler(notes_handler)     # Обработчик конспектов после заданий
+    application.add_handler(give_homework_handler)
+    application.add_handler(give_variant_handler)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("admin", admin_menu))
     application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_)"))  # Общий обработчик админа
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
     
+    async def daily_unread_notifications(context: ContextTypes.DEFAULT_TYPE):
+        db = context.bot_data['db']
+        students = db.get_all_students()
+        for student in students:
+            if student.telegram_id and db.has_unread_notifications(student.id):
+                try:
+                    await context.bot.send_message(
+                        chat_id=student.telegram_id,
+                        text="🔔 У вас есть непрочитанные уведомления! Откройте меню 'Уведомления'."
+                    )
+                except Exception as e:
+                    print(f"Ошибка напоминания студенту {student.id}: {e}")
+
+    # Запускаем ежедневный job в 14:00 по Москве
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    job_queue = application.job_queue
+    job_queue.run_daily(daily_unread_notifications, time=time(hour=14, minute=0, tzinfo=moscow_tz))
+
     # Запускаем бота
     application.run_polling()
 

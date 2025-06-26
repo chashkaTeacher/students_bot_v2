@@ -31,6 +31,8 @@ class Student(Base):
     lesson_link = Column(String)
     notes = Column(String)
     display_name = Column(String, nullable=True)
+    show_old_homework = Column(Boolean, default=False)  # Показывать ли старые домашние задания
+    last_menu_message_id = Column(Integer, nullable=True)  # ID последнего сообщения с меню
 
 class Homework(Base):
     __tablename__ = 'homework'
@@ -89,6 +91,38 @@ class Note(Base):
             # Если это диапазон (например, "19-21"), берем первое число
             number = number.split('-')[0]
         return int(number)
+
+class StudentHomework(Base):
+    __tablename__ = 'student_homework'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    homework_id = Column(Integer, ForeignKey('homework.id'), nullable=False)
+    assigned_at = Column(DateTime, default=func.now())
+    status = Column(String, default='assigned')
+
+class Variant(Base):
+    __tablename__ = 'variants'
+    id = Column(Integer, primary_key=True)
+    exam_type = Column(Enum(ExamType), nullable=False)
+    link = Column(String, nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+class Notification(Base):
+    __tablename__ = 'notifications'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    type = Column(String, nullable=False)  # 'homework', 'variant', etc.
+    text = Column(String, nullable=False)
+    link = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    is_read = Column(Boolean, default=False)
+
+class PushMessage(Base):
+    __tablename__ = 'push_messages'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    message_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=func.now())
 
 class Database:
     def __init__(self):
@@ -195,10 +229,17 @@ class Database:
     def delete_student(self, student_id: int):
         session = self.Session()
         try:
+            # Удаляем связанные уведомления
+            session.query(Notification).filter_by(student_id=student_id).delete()
+            # Удаляем связанные push-сообщения
+            session.query(PushMessage).filter_by(user_id=student_id).delete()
+            # Удаляем связанные назначения домашних заданий
+            session.query(StudentHomework).filter_by(student_id=student_id).delete()
+            # Удаляем самого студента
             student = session.query(Student).filter_by(id=student_id).first()
             if student:
                 session.delete(student)
-                session.commit()
+            session.commit()
         finally:
             session.close()
 
@@ -262,7 +303,7 @@ class Database:
         finally:
             session.close()
 
-    def update_student_settings(self, student_id: int, display_name: str = None):
+    def update_student_settings(self, student_id: int, display_name: str = None, show_old_homework: bool = None):
         """Обновляет настройки студента"""
         session = self.Session()
         try:
@@ -270,6 +311,8 @@ class Database:
             if student:
                 if display_name is not None:
                     student.display_name = display_name
+                if show_old_homework is not None:
+                    student.show_old_homework = show_old_homework
                 session.commit()
         finally:
             session.close()
@@ -281,7 +324,52 @@ class Database:
             student = session.query(Student).filter_by(id=student_id).first()
             if student:
                 student.display_name = None
+                student.show_old_homework = False
                 session.commit()
+        finally:
+            session.close()
+
+    def update_student_show_old_homework(self, student_id: int, show_old: bool):
+        """Обновляет настройку показа старых домашних заданий"""
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                student.show_old_homework = show_old
+                session.commit()
+        finally:
+            session.close()
+
+    def get_homeworks_for_student_with_filter(self, student_id: int, show_old: bool = None) -> list:
+        """Получает домашние задания для студента с учетом настройки показа старых заданий"""
+        session = self.Session()
+        try:
+            # Получаем все назначенные задания
+            assigned = session.query(StudentHomework).filter_by(student_id=student_id).all()
+            
+            if not assigned:
+                return []
+            
+            # Если show_old не указан, берем из настроек студента
+            if show_old is None:
+                student = session.query(Student).filter_by(id=student_id).first()
+                show_old = student.show_old_homework if student else False
+            
+            # Получаем информацию о заданиях
+            homeworks = []
+            for sh in assigned:
+                homework = session.query(Homework).filter_by(id=sh.homework_id).first()
+                if homework:
+                    homeworks.append((homework, sh.assigned_at))
+            
+            # Сортируем по номеру в названии (1, 2, 3, 11, 23...)
+            homeworks.sort(key=lambda x: x[0].get_task_number())
+            
+            # Если не показывать старые, возвращаем только самое новое (последнее по номеру)
+            if not show_old and homeworks:
+                return [homeworks[-1]]
+            
+            return homeworks
         finally:
             session.close()
 
@@ -476,5 +564,152 @@ class Database:
         except:
             session.rollback()
             return False
+        finally:
+            session.close()
+
+    def is_homework_assigned_to_student(self, student_id: int, homework_id: int) -> bool:
+        """Проверяет, назначено ли задание студенту"""
+        session = self.Session()
+        try:
+            existing = session.query(StudentHomework).filter_by(
+                student_id=student_id, 
+                homework_id=homework_id
+            ).first()
+            return existing is not None
+        finally:
+            session.close()
+
+    def assign_homework_to_student(self, student_id: int, homework_id: int) -> bool:
+        session = self.Session()
+        try:
+            # Проверяем, не назначено ли уже это задание этому студенту
+            existing = session.query(StudentHomework).filter_by(student_id=student_id, homework_id=homework_id).first()
+            if existing:
+                # Если задание уже назначено, обновляем дату назначения
+                existing.assigned_at = datetime.now()
+                session.commit()
+                return True
+            else:
+                # Если задание не назначено, создаем новую запись
+                sh = StudentHomework(student_id=student_id, homework_id=homework_id)
+                session.add(sh)
+                session.commit()
+                return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_homeworks_for_student(self, student_id: int) -> list:
+        session = self.Session()
+        try:
+            return session.query(StudentHomework).filter_by(student_id=student_id).all()
+        finally:
+            session.close()
+
+    def add_variant(self, exam_type: ExamType, link: str) -> bool:
+        session = self.Session()
+        try:
+            variant = Variant(exam_type=exam_type, link=link)
+            session.add(variant)
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_latest_variant(self, exam_type: ExamType):
+        session = self.Session()
+        try:
+            return session.query(Variant).filter_by(exam_type=exam_type).order_by(Variant.created_at.desc()).first()
+        finally:
+            session.close()
+
+    def add_notification(self, student_id: int, notif_type: str, text: str, link: str = None):
+        session = self.Session()
+        try:
+            notif = Notification(student_id=student_id, type=notif_type, text=text, link=link)
+            session.add(notif)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_notifications(self, student_id: int, only_unread: bool = False):
+        session = self.Session()
+        try:
+            q = session.query(Notification).filter_by(student_id=student_id)
+            if only_unread:
+                q = q.filter_by(is_read=False)
+            return q.order_by(Notification.created_at.desc()).all()
+        finally:
+            session.close()
+
+    def mark_notifications_read(self, student_id: int):
+        session = self.Session()
+        try:
+            session.query(Notification).filter_by(student_id=student_id, is_read=False).update({Notification.is_read: True})
+            session.commit()
+        finally:
+            session.close()
+
+    def has_unread_notifications(self, student_id: int) -> bool:
+        session = self.Session()
+        try:
+            return session.query(Notification).filter_by(student_id=student_id, is_read=False).count() > 0
+        finally:
+            session.close()
+
+    def update_student_menu_message_id(self, student_id: int, message_id: int):
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                student.last_menu_message_id = message_id
+                session.commit()
+        finally:
+            session.close()
+
+    def get_student_menu_message_id(self, student_id: int) -> int:
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                return student.last_menu_message_id
+            return None
+        finally:
+            session.close()
+
+    def clear_notifications(self, student_id: int):
+        session = self.Session()
+        try:
+            session.query(Notification).filter_by(student_id=student_id).delete()
+            session.commit()
+        finally:
+            session.close()
+
+    def add_push_message(self, user_id: int, message_id: int):
+        session = self.Session()
+        try:
+            push = PushMessage(user_id=user_id, message_id=message_id)
+            session.add(push)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_push_messages(self, user_id: int):
+        session = self.Session()
+        try:
+            return session.query(PushMessage).filter_by(user_id=user_id).all()
+        finally:
+            session.close()
+
+    def clear_push_messages(self, user_id: int):
+        session = self.Session()
+        try:
+            session.query(PushMessage).filter_by(user_id=user_id).delete()
+            session.commit()
         finally:
             session.close() 

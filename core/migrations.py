@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import declarative_base
+from core.database import Database
 
 Base = declarative_base()
 
@@ -25,20 +26,32 @@ def migrate_database():
 
     # Добавляем столбец notes в таблицу students, если его нет
     with engine.connect() as connection:
-        # Проверяем, существует ли столбец
+        # Проверяем, существует ли столбец notes
         result = connection.execute(text("""
             SELECT name FROM pragma_table_info('students') 
             WHERE name = 'notes'
         """))
-        
         if not result.fetchone():
-            # Если столбца нет, добавляем его
             connection.execute(text("""
                 ALTER TABLE students 
                 ADD COLUMN notes TEXT
             """))
             connection.commit()
             print("✅ Миграция успешно выполнена: добавлен столбец notes")
+
+    # Добавляем столбец last_menu_message_id в таблицу students, если его нет
+    with engine.connect() as connection:
+        result = connection.execute(text("""
+            SELECT name FROM pragma_table_info('students') 
+            WHERE name = 'last_menu_message_id'
+        """))
+        if not result.fetchone():
+            connection.execute(text("""
+                ALTER TABLE students 
+                ADD COLUMN last_menu_message_id INTEGER
+            """))
+            connection.commit()
+            print("✅ Миграция: добавлен столбец last_menu_message_id")
 
     # Создаем таблицу homework, если её нет
     if not inspector.has_table("homework"):
@@ -110,4 +123,87 @@ def migrate_database():
                     ADD COLUMN file_path VARCHAR
                 """))
                 connection.commit()
-                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу notes") 
+                print("✅ Миграция успешно выполнена: добавлен столбец file_path в таблицу notes")
+
+    # Создаем таблицу student_homework, если её нет
+    if not inspector.has_table("student_homework"):
+        with engine.connect() as connection:
+            connection.execute(text("""
+                CREATE TABLE student_homework (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id INTEGER NOT NULL,
+                    homework_id INTEGER NOT NULL,
+                    assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR DEFAULT 'assigned',
+                    FOREIGN KEY(student_id) REFERENCES students(id),
+                    FOREIGN KEY(homework_id) REFERENCES homework(id)
+                )
+            """))
+            connection.commit()
+            print("✅ Миграция успешно выполнена: создана таблица student_homework")
+
+def run_migrations():
+    """Запускает все миграции базы данных"""
+    db = Database()
+    engine = db.engine
+    
+    # Миграция 1: Добавление поля show_old_homework в таблицу students
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(students)"))
+            columns = [row[1] for row in result.fetchall()]
+            if 'show_old_homework' not in columns:
+                conn.execute(text("ALTER TABLE students ADD COLUMN show_old_homework BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+                print("✅ Миграция 1 выполнена: добавлено поле show_old_homework")
+            else:
+                print("ℹ️ Миграция 1 уже выполнена: поле show_old_homework уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении миграции 1: {e}")
+
+    # Миграция 2: Создание таблицы variants
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='variants'"))
+            if not result.fetchone():
+                conn.execute(text('''
+                    CREATE TABLE variants (
+                        id INTEGER PRIMARY KEY,
+                        exam_type VARCHAR(20) NOT NULL,
+                        link TEXT NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                '''))
+                conn.commit()
+                print("✅ Миграция 2 выполнена: создана таблица variants")
+            else:
+                print("ℹ️ Миграция 2 уже выполнена: таблица variants уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении миграции 2: {e}")
+
+    # Миграция 3: Создание таблицы notifications
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='notifications'"))
+            if not result.fetchone():
+                conn.execute(text('''
+                    CREATE TABLE notifications (
+                        id INTEGER PRIMARY KEY,
+                        student_id INTEGER NOT NULL,
+                        type VARCHAR(20) NOT NULL,
+                        text TEXT NOT NULL,
+                        link TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        is_read BOOLEAN DEFAULT FALSE,
+                        FOREIGN KEY(student_id) REFERENCES students(id)
+                    )
+                '''))
+                conn.commit()
+                print("✅ Миграция 3 выполнена: создана таблица notifications")
+            else:
+                print("ℹ️ Миграция 3 уже выполнена: таблица notifications уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении миграции 3: {e}")
+
+if __name__ == "__main__":
+    run_migrations() 
