@@ -45,6 +45,9 @@ async def show_notes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             InlineKeyboardButton("✏️ Редактировать", callback_data="notes_edit"),
             InlineKeyboardButton("❌ Удалить", callback_data="notes_delete")
         ],
+        [
+            InlineKeyboardButton("🔍 Проверить невыданные", callback_data="admin_check_unassigned_notes")
+        ],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)

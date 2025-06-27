@@ -1,8 +1,9 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from core.database import Database, ExamType
+from core.database import Database, ExamType, PendingNoteAssignment
 from handlers.student_handlers import student_menu, send_student_menu_by_chat_id
 import os
+import uuid
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -85,6 +86,9 @@ async def notes_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) 
         [
             InlineKeyboardButton("📚 Список конспектов", callback_data="admin_list_notes"),
             InlineKeyboardButton("✏️ Редактировать", callback_data="admin_edit_note")
+        ],
+        [
+            InlineKeyboardButton("🔍 Проверить невыданные", callback_data="admin_check_unassigned_notes")
         ],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
@@ -288,6 +292,9 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     elif query.data == "admin_notes":
         await notes_menu(update, context)
+        return ConversationHandler.END
+    elif query.data == "admin_check_unassigned_notes":
+        await check_unassigned_notes(update, context)
         return ConversationHandler.END
     elif query.data == "admin_homework":
         from handlers.homework_handlers import show_homework_menu
@@ -647,6 +654,179 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             await admin_menu(update, context)
         return ConversationHandler.END
 
+    # Обработчики для конспектов
+    elif query.data.startswith("assign_unassigned_note_"):
+        note_id = int(query.data.split("_")[-1])
+        db = context.bot_data['db']
+        note = db.get_note_by_id(note_id)
+        if not note:
+            await query.edit_message_text("❌ Конспект не найден.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+            return ConversationHandler.END
+        matching_students = db.get_students_with_matching_homework(note)
+        unassigned_students = [s for s in matching_students if not db.is_note_assigned_to_student(s.id, note.id)]
+        if not unassigned_students:
+            await query.edit_message_text("❌ Нет учеников для выдачи этого конспекта.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+            return ConversationHandler.END
+        process_id = str(uuid.uuid4())
+        db.add_pending_note_assignment_with_process(process_id, update.effective_user.id, note_id=note_id, step='choose_student')
+        exam_type = note.exam_type.value if hasattr(note.exam_type, 'value') else str(note.exam_type)
+        student_names = ', '.join([s.name for s in unassigned_students])
+        homeworks = db.get_homework_by_exam(note.exam_type)
+        hw_titles = ', '.join([hw.title for hw in homeworks if note.get_task_number() == hw.get_task_number()])
+        if not hw_titles:
+            hw_titles = 'Нет точных совпадений по номеру задания'
+        message_text = (
+            f"📚 <b>{note.title}</b>\n"
+            f"Экзамен: <b>{exam_type}</b>\n"
+            f"🔗 <a href='{note.link}'>Ссылка на конспект</a>\n\n"
+            f"<b>Ученики, которым можно выдать:</b>\n{student_names}\n\n"
+            f"<b>Подходит к заданиям:</b>\n{hw_titles}"
+        )
+        keyboard = []
+        for i in range(0, len(unassigned_students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(unassigned_students):
+                    student = unassigned_students[i + j]
+                    row.append(InlineKeyboardButton(student.name, callback_data=f"assign_note_to_student_{process_id}_{student.id}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")])
+        await query.edit_message_text(
+            message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML',
+            disable_web_page_preview=False
+        )
+        return ConversationHandler.END
+
+    elif query.data.startswith("assign_note_to_student_"):
+        parts = query.data.split("_")
+        process_id = parts[-2]
+        student_id = int(parts[-1])
+        user_id = update.effective_user.id
+        db = context.bot_data['db']
+        db.update_pending_note_assignment(process_id, student_id=student_id, step='choose_note')
+        pending = db.get_pending_note_assignment_by_process(process_id)
+        note_id = pending.note_id
+        exam_type = db.get_student_by_id(student_id).exam_type
+        available_notes = db.get_notes_by_exam(exam_type)
+        if not available_notes:
+            await query.edit_message_text("❌ Нет доступных конспектов для этого типа экзамена", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+            db.delete_pending_note_assignment_by_process(process_id)
+            return ConversationHandler.END
+        keyboard = []
+        for i in range(0, len(available_notes), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(available_notes):
+                    note = available_notes[i + j]
+                    is_assigned = db.is_note_assigned_to_student(student_id, note.id)
+                    prefix = "✅" if is_assigned else "📚"
+                    row.append(InlineKeyboardButton(f"{prefix} {note.title}", callback_data=f"assign_note_{note.id}_{process_id}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("📋 Выбрать из всех конспектов", callback_data=f"manual_select_notes_{process_id}")])
+        keyboard.append([InlineKeyboardButton("❌ Не выдавать конспект", callback_data=f"skip_note_assignment_{process_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")])
+        student = db.get_student_by_id(student_id)
+        await query.edit_message_text(f"📚 Выберите конспект для ученика {student.name}:\n✅ - уже выдан\n📚 - доступен для выдачи", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    elif query.data.startswith("assign_note_"):
+        parts = query.data.split("_")
+        note_id = int(parts[2])
+        process_id = parts[3]
+        user_id = update.effective_user.id
+        db = context.bot_data['db']
+        pending = db.get_pending_note_assignment_by_process(process_id)
+        if pending:
+            student_id = pending.student_id
+        else:
+            await query.edit_message_text("❌ Ошибка: данные не найдены. Начните процесс заново.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+            return ConversationHandler.END
+        success = db.assign_note_to_student(student_id, note_id)
+        if success:
+            note = db.get_note_by_id(note_id)
+            student = db.get_student_by_id(student_id)
+            await query.edit_message_text(f"✅ Конспект '{note.title}' успешно выдан ученику {student.name}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+        else:
+            await query.edit_message_text("❌ Ошибка при выдаче конспекта", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+        db.delete_pending_note_assignment_by_process(process_id)
+        return ConversationHandler.END
+
+    elif query.data.startswith("manual_select_notes_"):
+        process_id = query.data.split("_")[-1]
+        user_id = update.effective_user.id
+        db = context.bot_data['db']
+        pending = db.get_pending_note_assignment_by_process(process_id)
+        if not pending:
+            await query.edit_message_text("❌ Ошибка: данные не найдены. Начните процесс заново.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_check_unassigned_notes")]]))
+            return ConversationHandler.END
+        student_id = pending.student_id
+        exam_type = db.get_student_by_id(student_id).exam_type
+        available_notes = db.get_notes_by_exam(exam_type)
+        if not available_notes:
+            back_cb = "admin_give_homework" if pending.origin == 'give_homework' else "admin_check_unassigned_notes"
+            await query.edit_message_text("❌ Нет доступных конспектов для этого типа экзамена", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]]))
+            db.delete_pending_note_assignment_by_process(process_id)
+            return ConversationHandler.END
+        keyboard = []
+        for i in range(0, len(available_notes), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(available_notes):
+                    note = available_notes[i + j]
+                    is_assigned = db.is_note_assigned_to_student(student_id, note.id)
+                    prefix = "✅" if is_assigned else "📚"
+                    row.append(InlineKeyboardButton(f"{prefix} {note.title}", callback_data=f"assign_note_{note.id}_{process_id}"))
+            keyboard.append(row)
+        back_cb = "admin_give_homework" if pending.origin == 'give_homework' else "admin_check_unassigned_notes"
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_cb)])
+        student = db.get_student_by_id(student_id)
+        await query.edit_message_text(f"📚 Выберите конспект для ученика {student.name}:\n✅ - уже выдан\n📚 - доступен для выдачи", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    elif query.data.startswith("skip_note_assignment_"):
+        process_id = query.data.split("_")[-1]
+        user_id = update.effective_user.id
+        db = context.bot_data['db']
+        pending = db.get_pending_note_assignment_by_process(process_id)
+        db.delete_pending_note_assignment_by_process(process_id)
+        back_cb = "admin_give_homework" if pending and pending.origin == 'give_homework' else "admin_check_unassigned_notes"
+        await query.edit_message_text("✅ Домашнее задание выдано без конспекта", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]]))
+        return ConversationHandler.END
+
+    elif query.data.startswith("assign_note_homework_"):
+        # assign_note_homework_{homework_id}_{student_id}
+        parts = query.data.split("_")
+        homework_id = int(parts[3])
+        student_id = int(parts[4])
+        user_id = update.effective_user.id
+        db = context.bot_data['db']
+        process_id = str(uuid.uuid4())
+        db.add_pending_note_assignment_with_process(process_id, user_id, student_id=student_id, step='choose_note')
+        exam_type = db.get_student_by_id(student_id).exam_type
+        available_notes = db.get_notes_by_exam(exam_type)
+        if not available_notes:
+            await query.edit_message_text("❌ Нет доступных конспектов для этого типа экзамена", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]]))
+            db.delete_pending_note_assignment_by_process(process_id)
+            return ConversationHandler.END
+        keyboard = []
+        for i in range(0, len(available_notes), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(available_notes):
+                    note = available_notes[i + j]
+                    is_assigned = db.is_note_assigned_to_student(student_id, note.id)
+                    prefix = "✅" if is_assigned else "📚"
+                    row.append(InlineKeyboardButton(f"{prefix} {note.title}", callback_data=f"assign_note_{note.id}_{process_id}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("📋 Выбрать из всех конспектов", callback_data=f"manual_select_notes_{process_id}")])
+        keyboard.append([InlineKeyboardButton("❌ Не выдавать конспект", callback_data=f"skip_note_assignment_{process_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+        student = db.get_student_by_id(student_id)
+        await query.edit_message_text(f"📚 Выберите конспект для ученика {student.name}:\n✅ - уже выдан\n📚 - доступен для выдачи", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
     # Для всех остальных случаев
     return ConversationHandler.END
 
@@ -934,10 +1114,116 @@ async def give_homework_assign(update: Update, context: ContextTypes.DEFAULT_TYP
                     await send_student_menu_by_chat_id(context, student.telegram_id)
                 except Exception as e:
                     print(f"Ошибка push студенту {student.id}: {e}")
-        await update.callback_query.message.edit_text(
-            message_text,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
-        )
+        
+        # Предлагаем конспекты для выдачи
+        await suggest_notes_for_homework(update, context, homework, student)
+        return ConversationHandler.END
     
     give_homework_temp.pop(user_id, None)
+    return ConversationHandler.END
+
+async def suggest_notes_for_homework(update: Update, context: ContextTypes.DEFAULT_TYPE, homework, student):
+    """Предлагает конспекты для выдачи после назначения домашнего задания"""
+    db = context.bot_data['db']
+    process_id = str(uuid.uuid4())
+    db.add_pending_note_assignment_with_process(process_id, update.effective_user.id, student_id=student.id, step='choose_note', origin='give_homework')
+
+    # Получаем конспекты того же типа экзамена
+    available_notes = db.get_notes_by_exam(homework.exam_type)
+
+    # Ищем подходящие конспекты
+    exact_matches = []
+    keyword_matches = []
+
+    for note in available_notes:
+        # Проверяем, не выдан ли уже конспект ученику
+        if db.is_note_assigned_to_student(student.id, note.id):
+            continue
+        # Проверяем точное совпадение по номеру
+        hw_number = homework.get_task_number()
+        note_number = note.get_task_number()
+        if hw_number == note_number and hw_number != float('inf'):
+            exact_matches.append(note)
+        else:
+            # Проверяем схожесть по ключевым словам
+            hw_keywords = db._extract_keywords(homework.title)
+            note_keywords = db._extract_keywords(note.title)
+            similarity = db._calculate_similarity(hw_keywords, note_keywords)
+            if similarity > 0.7:  # Порог схожести 70%
+                keyword_matches.append(note)
+
+    # Формируем клавиатуру
+    keyboard = []
+
+    if exact_matches:
+        keyboard.append([InlineKeyboardButton(
+            f"✅ {exact_matches[0].title}",
+            callback_data=f"assign_note_{exact_matches[0].id}_{process_id}"
+        )])
+
+    if keyword_matches:
+        for note in keyword_matches[:2]:  # Максимум 2 предложения
+            keyboard.append([InlineKeyboardButton(
+                f"🔍 {note.title}",
+                callback_data=f"assign_note_{note.id}_{process_id}"
+            )])
+
+    keyboard.append([InlineKeyboardButton(
+        "📋 Выбрать из всех конспектов",
+        callback_data=f"manual_select_notes_{process_id}"
+    )])
+
+    keyboard.append([InlineKeyboardButton(
+        "❌ Не выдавать конспект",
+        callback_data=f"skip_note_assignment_{process_id}"
+    )])
+
+    # Формируем текст сообщения
+    message_text = f"✅ Домашнее задание '{homework.title}' выдано ученику {student.name}!\n\n"
+
+    if exact_matches:
+        message_text += f"📚 Найден подходящий конспект:\n"
+    elif keyword_matches:
+        message_text += f"🔍 Найдены похожие конспекты:\n"
+    else:
+        message_text += f"📚 Хотите выдать конспект к этому заданию?\n"
+
+    message_text += f"\nВыберите действие:"
+
+    await update.callback_query.message.edit_text(
+        message_text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def check_unassigned_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет невыданные конспекты и предлагает их выдать ученикам"""
+    db = context.bot_data['db']
+    unassigned = db.get_unassigned_notes_for_students()
+    
+    if not unassigned:
+        await update.callback_query.edit_message_text(
+            "✅ Все конспекты выданы ученикам!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_notes")
+            ]])
+        )
+        return
+    
+    # Показываем список невыданных конспектов
+    keyboard = []
+    for note, student_count in unassigned[:5]:  # Показываем первые 5
+        keyboard.append([InlineKeyboardButton(
+            f"📚 {note.title} ({student_count} учеников)", 
+            callback_data=f"assign_unassigned_note_{note.id}"
+        )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_notes")])
+    
+    await update.callback_query.edit_message_text(
+        f"🔍 Найдено {len(unassigned)} конспектов, которые можно выдать ученикам:\n\n"
+        f"Выберите конспект для выдачи:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    # Для всех остальных случаев
     return ConversationHandler.END 

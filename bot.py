@@ -361,7 +361,7 @@ def main():
     application.add_handler(give_variant_handler)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("admin", admin_menu))
-    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_)"))  # Общий обработчик админа
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_)"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
     
@@ -382,7 +382,7 @@ def main():
     moscow_tz = pytz.timezone('Europe/Moscow')
     job_queue = application.job_queue
     job_queue.run_daily(daily_unread_notifications, time=time(hour=14, minute=0, tzinfo=moscow_tz))
-
+    
     # Запускаем бота
     application.run_polling()
 

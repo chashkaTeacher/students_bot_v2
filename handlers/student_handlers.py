@@ -12,6 +12,10 @@ ENTER_DISPLAY_NAME = 1
 # Временное хранилище пользовательских настроек
 user_settings = {}
 
+temp_data = {}
+EDIT_NAME = 1000
+EDIT_LINK = 1001
+
 async def get_user_settings(user_id: int) -> dict:
     """Получает настройки пользователя или возвращает настройки по умолчанию"""
     if user_id not in user_settings:
@@ -122,65 +126,17 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
     """Обрабатывает действия студента"""
     query = update.callback_query
     
-    # Обрабатываем возможную ошибку устаревшего callback query
     try:
         await query.answer()
     except Exception as e:
-        # Игнорируем ошибку устаревшего query
         pass
     
     db: Database = context.bot_data['db']
     user_id = query.from_user.id
     student = db.get_student_by_telegram_id(user_id)
-
+    
     if query.data == "student_homework":
-        # Получаем домашние задания с учетом настройки
-        homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
-        
-        if not homeworks_data:
-            await query.edit_message_text(
-                text="📚 У вас пока нет выданных домашних заданий.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
-            )
-            return
-        
-        # Создаем список кнопок с группировкой
-        keyboard = []
-        
-        # Разделяем на старые и актуальное задание
-        if len(homeworks_data) > 1:
-            old_homeworks = homeworks_data[:-1]  # Все кроме последнего
-            current_homework = homeworks_data[-1]  # Последнее (актуальное)
-            
-            # Группируем старые задания по 2 в ряд
-            for i in range(0, len(old_homeworks), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(old_homeworks):
-                        homework, _ = old_homeworks[i + j]
-                        button_text = f"📚 {homework.title[:25]}{'...' if len(homework.title) > 25 else ''}"
-                        row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
-                keyboard.append(row)
-            
-            # Добавляем актуальное задание отдельной строкой внизу
-            current_hw, _ = current_homework
-            keyboard.append([InlineKeyboardButton(f"🆕 {current_hw.title}", callback_data=f"student_hw_{current_hw.id}")])
-        else:
-            # Если только одно задание
-            homework, _ = homeworks_data[0]
-            keyboard.append([InlineKeyboardButton(f"🆕 {homework.title}", callback_data=f"student_hw_{homework.id}")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
-        
-        # Формируем текст с информацией о настройке
-        settings_info = ""
-        if not student.show_old_homework and len(homeworks_data) > 1:
-            settings_info = "\n\nℹ️ Показано только актуальное задание. Включите показ старых заданий в настройках, чтобы увидеть все."
-        
-        await query.edit_message_text(
-            text=f"📚 Ваши выданные домашние задания:{settings_info}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await show_student_homework_menu(update, context, student, page=int(context.user_data.get('homework_page', 0)))
         return
     elif query.data.startswith("student_hw_file_"):
         hw_id = int(query.data.split("_")[-1])
@@ -190,9 +146,10 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         elif not hw.file_path:
             await query.message.reply_text(f"❌ У задания нет файла (id={hw_id})")
         else:
-            abs_path = os.path.abspath(os.path.normpath(hw.file_path))
-            if not os.path.exists(abs_path):
-                await query.message.reply_text(f"❌ Файл не найден: {abs_path}")
+            # Используем относительный путь от корня проекта
+            file_path = os.path.join(os.getcwd(), hw.file_path)
+            if not os.path.exists(file_path):
+                await query.message.reply_text(f"❌ Файл не найден: {hw.file_path}")
             else:
                 # Сначала убираем меню (заменяем на "⏳ Отправка файла...")
                 try:
@@ -202,7 +159,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
                         raise
                 # Затем отправляем файл отдельным сообщением
                 try:
-                    await query.message.reply_document(document=abs_path, caption=f"📝 {hw.title}")
+                    await query.message.reply_document(document=file_path, caption=f"📝 {hw.title}")
                 except Exception as e:
                     await query.message.reply_text(f"❌ Ошибка при отправке файла: {e}")
                 # После файла возвращаем меню задания отдельным сообщением
@@ -226,33 +183,71 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
         
-        # Определяем, является ли это актуальным заданием (последним в списке)
+        # Определяем эмодзи по типу экзамена
+        exam_emoji = {
+            'ОГЭ': '📝',
+            'ЕГЭ': '📚',
+            'Школьная программа': '🏫',
+        }
+        emoji = exam_emoji.get(getattr(hw, 'exam_type', ''), '📖')
+        
+        # Формируем текст с красивым оформлением
+        exam_type = getattr(hw, 'exam_type', '')
+        exam_info = f"📝 Экзамен: {exam_type.value}\n" if exam_type else ""
+        
+        # Определяем, является ли это актуальным заданием
         homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
         is_current = False
         if homeworks_data:
             is_current = homeworks_data[-1][0].id == hw_id
         
-        # Формируем текст с статусом
-        status_text = "🆕 Актуальное задание" if is_current else "📚 Предыдущее задание"
+        # Статус задания
+        status_text = "🆕 Актуальное задание" if is_current else "📚 Пройденное задание"
         
-        buttons = [[InlineKeyboardButton("Ссылка на задание", url=hw.link)]]
+        message_text = (
+            f"{emoji} <b>{hw.title}</b>\n"
+            f"{exam_info}"
+            f"─────────────\n"
+            f"{status_text}\n"
+        )
+        
+        # Формируем кнопки для задания с эмодзи
+        buttons = [[InlineKeyboardButton("🔗 Открыть онлайн", url=hw.link)]]
         if hw.file_path:
-            buttons.append([InlineKeyboardButton("Скачать файл", callback_data=f"student_hw_file_{hw_id}")])
+            buttons.append([InlineKeyboardButton("📎 Скачать файл", callback_data=f"student_hw_file_{hw_id}")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_homework")])
         
-        await query.edit_message_text(
-            text=f"📝 <b>{hw.title}</b>\n\n{status_text}",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await query.edit_message_text(
+                text=message_text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                raise
         return
     elif query.data == "student_notes":
-        await query.edit_message_text(
-            text="📝 Раздел конспектов в разработке",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="student_back")
-            ]])
-        )
+        await show_student_notes_menu(update, context, student, page=int(context.user_data.get('notes_page', 0)))
+        return
+    elif query.data == "student_notes_prev":
+        page = int(context.user_data.get('notes_page', 0))
+        if page > 0:
+            await show_student_notes_menu(update, context, student, page=page-1)
+        else:
+            await query.answer("Это первая страница")
+        return
+    elif query.data == "student_notes_next":
+        student_notes = db.get_notes_for_student(student.id)
+        page = int(context.user_data.get('notes_page', 0))
+        per_page = 6  # Обновляем на 6, как в новой функции
+        total = len(student_notes)
+        max_page = (total + per_page - 1) // per_page - 1
+        if page < max_page:
+            await show_student_notes_menu(update, context, student, page=page+1)
+        else:
+            await query.answer("Это последняя страница")
+        return
     elif query.data == "student_schedule":
         await query.edit_message_text(
             text="📅 Раздел расписания в разработке",
@@ -393,9 +388,9 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         db.mark_notifications_read(student.id)
         nav_buttons = []
         if start > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data="notif_prev"))
+            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
         if end < total:
-            nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data="notif_next"))
+            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
         buttons = []
         if nav_buttons:
             buttons.append(nav_buttons)
@@ -461,9 +456,9 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         db.mark_notifications_read(student.id)
         nav_buttons = []
         if start > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data="notif_prev"))
+            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
         if end < total:
-            nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data="notif_next"))
+            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
         buttons = []
         if nav_buttons:
             buttons.append(nav_buttons)
@@ -529,9 +524,9 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         db.mark_notifications_read(student.id)
         nav_buttons = []
         if start > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data="notif_prev"))
+            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
         if end < total:
-            nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data="notif_next"))
+            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
         buttons = []
         if nav_buttons:
             buttons.append(nav_buttons)
@@ -566,6 +561,111 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             text="🔔 Все уведомления удалены!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
         )
+        return
+    elif query.data.startswith("student_note_file_"):
+        note_id = int(query.data.split("_")[-1])
+        note = db.get_note_by_id(note_id)
+        if not note:
+            await query.message.reply_text(f"❌ Конспект не найден (id={note_id})")
+        elif not note.file_path:
+            await query.message.reply_text(f"❌ У конспекта нет файла (id={note_id})")
+        else:
+            # Используем относительный путь от корня проекта
+            file_path = os.path.join(os.getcwd(), note.file_path)
+            if not os.path.exists(file_path):
+                await query.message.reply_text(f"❌ Файл не найден: {note.file_path}")
+            else:
+                # Сначала убираем меню (заменяем на "⏳ Отправка файла...")
+                try:
+                    await query.edit_message_text(text="⏳ Отправка файла...")
+                except Exception as e:
+                    if "Message is not modified" not in str(e):
+                        raise
+                # Затем отправляем файл отдельным сообщением
+                try:
+                    await query.message.reply_document(document=file_path, caption=f"📚 {note.title}")
+                except Exception as e:
+                    await query.message.reply_text(f"❌ Ошибка при отправке файла: {e}")
+                # После файла возвращаем меню конспекта отдельным сообщением
+                buttons = [[InlineKeyboardButton("🔗 Открыть онлайн", url=note.link)]]
+                if note and note.file_path:
+                    buttons.append([InlineKeyboardButton("📎 Скачать файл", callback_data=f"student_note_file_{note_id}")])
+                buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_notes")])
+                await query.message.reply_text(
+                    text=f"📚 <b>{note.title}</b>",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML
+                )
+        return
+    elif query.data.startswith("student_note_"):
+        note_id = int(query.data.split("_")[-1])
+        note = db.get_note_by_id(note_id)
+        if not note:
+            await query.edit_message_text(
+                text="❌ Конспект не найден.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_notes")]])
+            )
+            return
+        
+        # Определяем эмодзи по типу экзамена
+        exam_emoji = {
+            'ОГЭ': '📝',
+            'ЕГЭ': '📚',
+            'Школьная программа': '🏫',
+        }
+        emoji = exam_emoji.get(getattr(note, 'exam_type', ''), '📖')
+        
+        # Получаем номер задания, если есть
+        task_number = note.get_task_number()
+        task_info = f"#️⃣ Задание: №{task_number}\n" if task_number != float('inf') else ""
+        
+        # Формируем текст с красивым оформлением
+        exam_type = getattr(note, 'exam_type', '')
+        exam_info = f"📝 Экзамен: {exam_type.value}\n" if exam_type else ""
+        
+        message_text = (
+            f"{emoji} <b>{note.title}</b>\n"
+            f"{exam_info}"
+            f"{task_info}"
+            f"─────────────\n"
+        )
+        
+        # Формируем кнопки для конспекта с эмодзи
+        buttons = [[InlineKeyboardButton("🔗 Открыть онлайн", url=note.link)]]
+        if note.file_path:
+            buttons.append([InlineKeyboardButton("📎 Скачать файл", callback_data=f"student_note_file_{note_id}")])
+        buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_notes")])
+        
+        try:
+            await query.edit_message_text(
+                text=message_text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                raise
+        return
+    elif query.data == "student_homework_prev":
+        page = int(context.user_data.get('homework_page', 0))
+        if page > 0:
+            await show_student_homework_menu(update, context, student, page=page-1)
+        else:
+            await query.answer("Это первая страница")
+        return
+    elif query.data == "student_homework_next":
+        homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
+        # Если показ старых заданий отключен и есть больше одного задания, показываем только актуальное
+        if not student.show_old_homework and len(homeworks_data) > 1:
+            homeworks_data = [homeworks_data[-1]]
+        page = int(context.user_data.get('homework_page', 0))
+        per_page = 5  # 4 старых + 1 актуальное
+        total = len(homeworks_data)
+        max_page = (total + per_page - 1) // per_page - 1
+        if page < max_page:
+            await show_student_homework_menu(update, context, student, page=page+1)
+        else:
+            await query.answer("Это последняя страница")
         return
 
 async def handle_display_name_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -609,11 +709,9 @@ async def show_student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     
-    # Обрабатываем возможную ошибку устаревшего callback query
     try:
         await query.answer()
     except Exception as e:
-        # Игнорируем ошибку устаревшего query
         pass
     
     action, student_id = query.data.split("_")[1:]  # student_edit_123 -> ["student", "edit", "123"]
@@ -631,11 +729,9 @@ async def handle_student_edit_action(update: Update, context: ContextTypes.DEFAU
     """Обрабатывает выбор действия при редактировании"""
     query = update.callback_query
     
-    # Обрабатываем возможную ошибку устаревшего callback query
     try:
         await query.answer()
     except Exception as e:
-        # Игнорируем ошибку устаревшего query
         pass
     
     parts = query.data.split("_")  # student_edit_link_123 -> ["student", "edit", "link", "123"]
@@ -707,7 +803,7 @@ async def handle_student_link_edit(update: Update, context: ContextTypes.DEFAULT
             InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
         ]])
     )
-    return ConversationHandler.END
+    return ConversationHandler.END 
 
 async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     """Отправляет меню студента по chat_id (без update), удаляя предыдущее меню если оно есть"""
@@ -739,3 +835,129 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
     greeting = f"👋 Привет, {display_name}!"
     msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
     db.update_student_menu_message_id(student.id, msg.message_id) 
+
+async def show_student_notes_menu(update, context, student, page=0):
+    db = context.bot_data['db']
+    student_notes = db.get_notes_for_student(student.id)
+    if not student_notes:
+        await update.callback_query.edit_message_text(
+            text="📝 У вас пока нет выданных конспектов.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+        )
+        return
+    per_page = 6  # 3 строки по 2 конспекта
+    total = len(student_notes)
+    max_page = (total + per_page - 1) // per_page - 1
+    page = max(0, min(page, max_page))
+    context.user_data['notes_page'] = page
+    start = page * per_page
+    end = start + per_page
+    notes_on_page = student_notes[start:end]
+    keyboard = []
+    exam_emoji = {
+        'ОГЭ': '📝',
+        'ЕГЭ': '📚',
+        'Школьная программа': '🏫',
+    }
+    for i in range(0, len(notes_on_page), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(notes_on_page):
+                note = notes_on_page[i + j]
+                # Определяем эмодзи по типу экзамена
+                emoji = exam_emoji.get(getattr(note, 'exam_type', ''), '📖')
+                # Краткое описание (первые 20 символов)
+                short_descr = note.title[:20] + ('…' if len(note.title) > 20 else '')
+                button_text = f"{emoji} {short_descr}"
+                row.append(InlineKeyboardButton(button_text, callback_data=f"student_note_{note.id}"))
+        if row:
+            keyboard.append(row)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="student_notes_prev"))
+    if end < total:
+        nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="student_notes_next"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    header = f"📚 <b>Ваши конспекты</b>\n"
+    header += "─────────────\n"
+    try:
+        await update.callback_query.edit_message_text(
+            text=header,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        if "Message is not modified" not in str(e):
+            raise
+
+async def show_student_homework_menu(update, context, student, page=0):
+    """Показывает меню домашних заданий ученика с пагинацией"""
+    db = context.bot_data['db']
+    homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
+    
+    if not homeworks_data:
+        await update.callback_query.edit_message_text(
+            text="📚 У вас пока нет выданных домашних заданий.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+        )
+        return
+    
+    # Если показ старых заданий отключен и есть больше одного задания, показываем только актуальное
+    if not student.show_old_homework and len(homeworks_data) > 1:
+        homeworks_data = [homeworks_data[-1]]  # Только последнее (актуальное) задание
+    
+    # Определяем актуальное задание
+    all_homeworks = db.get_homeworks_for_student_with_filter(student.id)
+    current_homework_id = all_homeworks[-1][0].id if all_homeworks else None
+    
+    # Отделяем старые задания от актуального
+    old_homeworks = [hw for hw, _ in homeworks_data if hw.id != current_homework_id]
+    current_homework = next((hw for hw, _ in homeworks_data if hw.id == current_homework_id), None)
+    
+    per_page = 4  # 4 старых задания на страницу
+    total_old = len(old_homeworks)
+    max_page = (total_old + per_page - 1) // per_page - 1 if total_old > 0 else 0
+    page = max(0, min(page, max_page))
+    context.user_data['homework_page'] = page
+    
+    start = page * per_page
+    end = start + per_page
+    old_on_page = old_homeworks[start:end]
+    
+    keyboard = []
+    # Старые задания по 2 в строке
+    for i in range(0, len(old_on_page), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(old_on_page):
+                homework = old_on_page[i + j]
+                short_title = homework.title[:20] + ('…' if len(homework.title) > 20 else '')
+                button_text = f"📚 {short_title}"
+                row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
+        if row:
+            keyboard.append(row)
+    # Кнопки навигации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="student_homework_prev"))
+    if end < total_old:
+        nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="student_homework_next"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    # Актуальное задание всегда внизу
+    if current_homework:
+        short_title = current_homework.title[:40] + ('…' if len(current_homework.title) > 40 else '')
+        keyboard.append([InlineKeyboardButton(f"🆕 {short_title}", callback_data=f"student_hw_{current_homework.id}")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    # Формируем заголовок
+    header = f"📚 <b>Ваши домашние задания</b>\n"
+    if not student.show_old_homework and len(db.get_homeworks_for_student_with_filter(student.id)) > 1:
+        header += "ℹ️ Показано только актуальное задание\n"
+    header += "─────────────\n"
+    await update.callback_query.edit_message_text(
+        text=header,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    ) 

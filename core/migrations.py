@@ -142,6 +142,65 @@ def migrate_database():
             connection.commit()
             print("✅ Миграция успешно выполнена: создана таблица student_homework")
 
+    # Создаём таблицу pending_note_assignments, если её нет
+    if not inspector.has_table("pending_note_assignments"):
+        with engine.connect() as connection:
+            connection.execute(text('''
+                CREATE TABLE pending_note_assignments (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    note_id INTEGER NOT NULL,
+                    student_id INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            '''))
+            connection.commit()
+            print("✅ Миграция: создана таблица pending_note_assignments")
+    else:
+        # Добавить поле process_id, step, origin, сделать note_id и student_id nullable в pending_note_assignments
+        with engine.connect() as connection:
+            # Проверяем наличие столбца process_id
+            result = connection.execute(text("SELECT name FROM pragma_table_info('pending_note_assignments') WHERE name = 'process_id'"))
+            if not result.fetchone():
+                connection.execute(text("ALTER TABLE pending_note_assignments ADD COLUMN process_id TEXT"))
+                # Создаем уникальный индекс для process_id
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_note_assignments_process_id ON pending_note_assignments(process_id)"))
+                print("✅ Миграция: добавлен столбец process_id в pending_note_assignments")
+            # Проверяем наличие столбца step
+            result = connection.execute(text("SELECT name FROM pragma_table_info('pending_note_assignments') WHERE name = 'step'"))
+            if not result.fetchone():
+                connection.execute(text("ALTER TABLE pending_note_assignments ADD COLUMN step TEXT"))
+                print("✅ Миграция: добавлен столбец step в pending_note_assignments")
+            # Проверяем наличие столбца origin
+            result = connection.execute(text("SELECT name FROM pragma_table_info('pending_note_assignments') WHERE name = 'origin'"))
+            if not result.fetchone():
+                connection.execute(text("ALTER TABLE pending_note_assignments ADD COLUMN origin TEXT"))
+                print("✅ Миграция: добавлен столбец origin в pending_note_assignments")
+            # SQLite не поддерживает ALTER COLUMN для изменения ограничений, поэтому нужно пересоздать таблицу
+            # Проверяем, есть ли данные в таблице
+            result = connection.execute(text("SELECT COUNT(*) FROM pending_note_assignments"))
+            row_count = result.fetchone()[0]
+            
+            if row_count == 0:
+                # Если таблица пустая, пересоздаем её с правильной структурой
+                connection.execute(text("DROP TABLE pending_note_assignments"))
+                connection.execute(text('''
+                    CREATE TABLE pending_note_assignments (
+                        id INTEGER PRIMARY KEY,
+                        process_id TEXT UNIQUE NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        note_id INTEGER,
+                        student_id INTEGER,
+                        step TEXT,
+                        origin TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                '''))
+                print("✅ Миграция: пересоздана таблица pending_note_assignments с правильной структурой")
+            else:
+                print("⚠️ В таблице pending_note_assignments есть данные. Ручная миграция может потребоваться.")
+        print("ℹ️ Таблица pending_note_assignments уже существует")
+
 def run_migrations():
     """Запускает все миграции базы данных"""
     db = Database()
@@ -204,6 +263,49 @@ def run_migrations():
                 print("ℹ️ Миграция 3 уже выполнена: таблица notifications уже существует")
     except Exception as e:
         print(f"❌ Ошибка при выполнении миграции 3: {e}")
+
+    # Миграция 4: Создание таблицы push_messages
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='push_messages'"))
+            if not result.fetchone():
+                conn.execute(text('''
+                    CREATE TABLE push_messages (
+                        id INTEGER PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        message_id INTEGER NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                '''))
+                conn.commit()
+                print("✅ Миграция 4 выполнена: создана таблица push_messages")
+            else:
+                print("ℹ️ Миграция 4 уже выполнена: таблица push_messages уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении миграции 4: {e}")
+
+    # Миграция 5: Создание таблицы student_notes
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='student_notes'"))
+            if not result.fetchone():
+                conn.execute(text('''
+                    CREATE TABLE student_notes (
+                        id INTEGER PRIMARY KEY,
+                        student_id INTEGER NOT NULL,
+                        note_id INTEGER NOT NULL,
+                        assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(student_id) REFERENCES students(id),
+                        FOREIGN KEY(note_id) REFERENCES notes(id),
+                        UNIQUE(student_id, note_id)
+                    )
+                '''))
+                conn.commit()
+                print("✅ Миграция 5 выполнена: создана таблица student_notes")
+            else:
+                print("ℹ️ Миграция 5 уже выполнена: таблица student_notes уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка при выполнении миграции 5: {e}")
 
 if __name__ == "__main__":
     run_migrations() 

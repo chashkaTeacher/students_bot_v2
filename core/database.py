@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, func, Boolean, Enum, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from datetime import datetime
+from datetime import datetime, timedelta
 import enum
 import random
 import string
@@ -124,6 +124,29 @@ class PushMessage(Base):
     message_id = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
+class StudentNote(Base):
+    __tablename__ = 'student_notes'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    note_id = Column(Integer, ForeignKey('notes.id'), nullable=False)
+    assigned_at = Column(DateTime, default=func.now())
+    
+    # Создаем уникальный индекс для предотвращения дублирования
+    __table_args__ = (
+        UniqueConstraint('student_id', 'note_id', name='unique_student_note'),
+    )
+
+class PendingNoteAssignment(Base):
+    __tablename__ = 'pending_note_assignments'
+    id = Column(Integer, primary_key=True)
+    process_id = Column(String, nullable=False, unique=True)  # UUID процесса
+    user_id = Column(Integer, nullable=False)
+    note_id = Column(Integer, nullable=True)
+    student_id = Column(Integer, nullable=True)
+    step = Column(String, nullable=True)  # этап процесса (например, 'choose_note', 'confirm')
+    origin = Column(String, nullable=True)  # источник процесса (например, 'give_homework', 'check_unassigned')
+    created_at = Column(DateTime, default=func.now())
+
 class Database:
     def __init__(self):
         self.engine = create_engine('sqlite:///students.db')
@@ -239,7 +262,7 @@ class Database:
             student = session.query(Student).filter_by(id=student_id).first()
             if student:
                 session.delete(student)
-            session.commit()
+                session.commit()
         finally:
             session.close()
 
@@ -468,7 +491,7 @@ class Database:
             session.rollback()
             return False
         finally:
-            session.close()
+            session.close() 
 
     def add_note(self, title: str, link: str, exam_type: ExamType, file_path: str = None) -> bool:
         """Добавляет новый конспект"""
@@ -707,9 +730,190 @@ class Database:
             session.close()
 
     def clear_push_messages(self, user_id: int):
+        """Очищает push-сообщения пользователя"""
         session = self.Session()
         try:
-            session.query(PushMessage).filter_by(user_id=user_id).delete()
+            push_messages = session.query(PushMessage).filter_by(user_id=user_id).all()
+            for msg in push_messages:
+                session.delete(msg)
+            session.commit()
+        finally:
+            session.close()
+
+    # Методы для работы с конспектами учеников
+    def assign_note_to_student(self, student_id: int, note_id: int) -> bool:
+        """Назначает конспект ученику"""
+        session = self.Session()
+        try:
+            # Проверяем, не назначен ли уже этот конспект этому ученику
+            existing = session.query(StudentNote).filter_by(
+                student_id=student_id, 
+                note_id=note_id
+            ).first()
+            
+            if existing:
+                # Если конспект уже назначен, обновляем дату назначения
+                existing.assigned_at = datetime.now()
+                session.commit()
+                return True
+            else:
+                # Если конспект не назначен, создаем новую запись
+                student_note = StudentNote(student_id=student_id, note_id=note_id)
+                session.add(student_note)
+                session.commit()
+                return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def is_note_assigned_to_student(self, student_id: int, note_id: int) -> bool:
+        """Проверяет, назначен ли конспект ученику"""
+        session = self.Session()
+        try:
+            existing = session.query(StudentNote).filter_by(
+                student_id=student_id, 
+                note_id=note_id
+            ).first()
+            return existing is not None
+        finally:
+            session.close()
+
+    def get_notes_for_student(self, student_id: int) -> list:
+        """Получает список конспектов, назначенных ученику"""
+        session = self.Session()
+        try:
+            student_notes = session.query(StudentNote).filter_by(student_id=student_id).all()
+            notes = []
+            for sn in student_notes:
+                note = session.query(Note).filter_by(id=sn.note_id).first()
+                if note:
+                    notes.append(note)
+            # Сортируем конспекты по номеру
+            return sorted(notes, key=lambda note: note.get_task_number())
+        finally:
+            session.close()
+
+    def get_students_with_matching_homework(self, note: Note) -> list:
+        """Получает список учеников с домашними заданиями, подходящими к конспекту"""
+        session = self.Session()
+        try:
+            # Получаем всех учеников того же типа экзамена
+            students = session.query(Student).filter_by(exam_type=note.exam_type).all()
+            matching_students = []
+            
+            for student in students:
+                # Получаем домашние задания ученика
+                student_homeworks = session.query(StudentHomework).filter_by(student_id=student.id).all()
+                
+                for sh in student_homeworks:
+                    homework = session.query(Homework).filter_by(id=sh.homework_id).first()
+                    if homework and self._is_homework_note_match(homework, note):
+                        matching_students.append(student)
+                        break  # Если нашли подходящее задание, переходим к следующему ученику
+            
+            return matching_students
+        finally:
+            session.close()
+
+    def get_unassigned_notes_for_students(self) -> list:
+        """Получает список конспектов, которые можно выдать ученикам"""
+        session = self.Session()
+        try:
+            unassigned = []
+            all_notes = session.query(Note).all()
+            
+            for note in all_notes:
+                # Ищем учеников с соответствующими заданиями
+                matching_students = self.get_students_with_matching_homework(note)
+                
+                # Фильтруем тех, кому конспект еще не выдан
+                unassigned_students = []
+                for student in matching_students:
+                    if not self.is_note_assigned_to_student(student.id, note.id):
+                        unassigned_students.append(student)
+                
+                if unassigned_students:
+                    unassigned.append((note, len(unassigned_students)))
+            
+            return unassigned
+        finally:
+            session.close()
+
+    def _is_homework_note_match(self, homework: Homework, note: Note) -> bool:
+        """Проверяет, подходит ли конспект к домашнему заданию"""
+        # Извлекаем номера из названий
+        hw_number = homework.get_task_number()
+        note_number = note.get_task_number()
+        
+        # Если номера совпадают, это точное совпадение
+        if hw_number == note_number and hw_number != float('inf'):
+            return True
+        
+        # Если номера не совпадают, проверяем по ключевым словам
+        hw_keywords = self._extract_keywords(homework.title)
+        note_keywords = self._extract_keywords(note.title)
+        
+        similarity = self._calculate_similarity(hw_keywords, note_keywords)
+        return similarity > 0.7  # Порог схожести 70%
+
+    def _extract_keywords(self, title: str) -> list:
+        """Извлекает ключевые слова из названия"""
+        # Убираем стоп-слова и приводим к нижнему регистру
+        stop_words = {'задача', 'задание', 'конспект', 'по', 'в', 'на', 'для', 'и', 'или', 'с', 'от', 'до'}
+        words = title.lower().split()
+        return [w for w in words if w not in stop_words and len(w) > 2]
+
+    def _calculate_similarity(self, keywords1: list, keywords2: list) -> float:
+        """Вычисляет схожесть по ключевым словам"""
+        if not keywords1 or not keywords2:
+            return 0.0
+        
+        common = set(keywords1) & set(keywords2)
+        total = set(keywords1) | set(keywords2)
+        return len(common) / len(total) if total else 0.0 
+
+    def add_pending_note_assignment_with_process(self, process_id: str, user_id: int, student_id: int = None, note_id: int = None, step: str = None, origin: str = None):
+        session = self.Session()
+        try:
+            assignment = PendingNoteAssignment(process_id=process_id, user_id=user_id, student_id=student_id, note_id=note_id, step=step, origin=origin)
+            session.add(assignment)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_pending_note_assignment_by_process(self, process_id: str) -> PendingNoteAssignment:
+        session = self.Session()
+        try:
+            return session.query(PendingNoteAssignment).filter_by(process_id=process_id).first()
+        finally:
+            session.close()
+
+    def update_pending_note_assignment(self, process_id: str, **kwargs):
+        session = self.Session()
+        try:
+            assignment = session.query(PendingNoteAssignment).filter_by(process_id=process_id).first()
+            if assignment:
+                for k, v in kwargs.items():
+                    setattr(assignment, k, v)
+                session.commit()
+        finally:
+            session.close()
+
+    def delete_pending_note_assignment_by_process(self, process_id: str):
+        session = self.Session()
+        try:
+            session.query(PendingNoteAssignment).filter_by(process_id=process_id).delete()
+            session.commit()
+        finally:
+            session.close()
+
+    def clear_old_pending_note_assignments(self, minutes: int = 10):
+        session = self.Session()
+        try:
+            threshold = datetime.now() - timedelta(minutes=minutes)
+            session.query(PendingNoteAssignment).filter(PendingNoteAssignment.created_at < threshold).delete()
             session.commit()
         finally:
             session.close() 
