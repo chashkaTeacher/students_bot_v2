@@ -19,6 +19,9 @@ temp_data = {}
 
 GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK = range(100, 103)
 
+# Новые состояния для школьной программы
+SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE, SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE = range(103, 111)
+
 give_homework_temp = {}
 
 GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK = 200, 201
@@ -171,13 +174,26 @@ async def choose_exam(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def enter_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ссылки на занятие"""
-    link = update.message.text
+    link = update.message.text.strip()
     user_id = update.effective_user.id
     
     if user_id not in student_data:
         await update.message.reply_text("❌ Ошибка: данные о студенте не найдены. Начните сначала.")
         await admin_menu(update, context)
         return ConversationHandler.END
+    
+    # Валидация URL
+    from core.database import is_valid_url
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return ENTER_LINK
     
     # Получаем все данные из временного хранилища
     student_info = student_data[user_id]
@@ -859,7 +875,20 @@ async def handle_edit_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
     
     student_id = temp_data[user_id]["student_id"]
-    new_link = update.message.text
+    new_link = update.message.text.strip()
+    
+    # Валидация URL
+    from core.database import is_valid_url
+    if not is_valid_url(new_link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return EDIT_STUDENT_LINK
     
     db = context.bot_data['db']
     db.update_student_link(student_id, new_link)
@@ -927,8 +956,16 @@ async def handle_edit_exam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     student_id = edit_data[user_id]["student_id"]
     
     try:
+        old_exam_type = context.bot_data['db'].get_student_by_id(student_id).exam_type
         context.bot_data['db'].update_student_exam_type(student_id, ExamType[exam_type])
-        await query.message.edit_text("✅ Тип экзамена успешно изменен!")
+        
+        # Формируем сообщение в зависимости от того, изменился ли тип экзамена
+        if old_exam_type != ExamType[exam_type]:
+            message_text = f"✅ Тип экзамена изменен с {old_exam_type.value} на {ExamType[exam_type].value}!\n\n⚠️ Старые назначения домашних заданий и конспектов были очищены."
+        else:
+            message_text = "✅ Тип экзамена успешно изменен!"
+        
+        await query.message.edit_text(message_text)
         del edit_data[user_id]
         await admin_menu(update, context)
         return ConversationHandler.END
@@ -984,8 +1021,22 @@ async def handle_give_variant_choose_exam(update: Update, context: ContextTypes.
     return GIVE_VARIANT_ENTER_LINK
 
 async def handle_give_variant_enter_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    link = update.message.text
+    link = update.message.text.strip()
     user_id = update.effective_user.id
+    
+    # Валидация URL
+    from core.database import is_valid_url
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return GIVE_VARIANT_ENTER_LINK
+    
     exam_type = give_variant_temp[user_id]["exam_type"]
     db = context.bot_data['db']
     db.add_variant(ExamType[exam_type], link)
@@ -1036,21 +1087,41 @@ async def give_homework_choose_student(update: Update, context: ContextTypes.DEF
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
         )
         return ConversationHandler.END
-    keyboard = []
-    for i in range(0, len(students), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(students):
-                student = students[i + j]
-                row.append(InlineKeyboardButton(student.name, callback_data=f"give_hw_student_{student.id}"))
-        keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.edit_text(
-        "Выберите ученика:",
-        reply_markup=reply_markup
-    )
-    return GIVE_HOMEWORK_CHOOSE_STUDENT
+    
+    # Для школьной программы показываем выбор ученика
+    if exam_type == "SCHOOL":
+        keyboard = []
+        for i in range(0, len(students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(students):
+                    student = students[i + j]
+                    row.append(InlineKeyboardButton(student.name, callback_data=f"school_hw_student_{student.id}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.edit_text(
+            "Выберите ученика для выдачи домашнего задания:",
+            reply_markup=reply_markup
+        )
+        return GIVE_HOMEWORK_CHOOSE_STUDENT
+    else:
+        # Для ОГЭ и ЕГЭ оставляем старую логику
+        keyboard = []
+        for i in range(0, len(students), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(students):
+                    student = students[i + j]
+                    row.append(InlineKeyboardButton(student.name, callback_data=f"give_hw_student_{student.id}"))
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.edit_text(
+            "Выберите ученика:",
+            reply_markup=reply_markup
+        )
+        return GIVE_HOMEWORK_CHOOSE_STUDENT
 
 async def give_homework_choose_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     student_id = int(update.callback_query.data.split('_')[-1])
@@ -1226,4 +1297,325 @@ async def check_unassigned_notes(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     # Для всех остальных случаев
-    return ConversationHandler.END 
+    return ConversationHandler.END
+
+async def school_homework_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает выбор типа задания для школьной программы"""
+    student_id = int(update.callback_query.data.split('_')[-1])
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["student_id"] = student_id
+    
+    db = Database()
+    exam_type = give_homework_temp[user_id]["exam_type"]
+    homeworks = db.get_homework_by_exam(exam_type)
+    
+    keyboard = []
+    
+    # Если есть существующие задания, показываем их
+    if homeworks:
+        keyboard.append([InlineKeyboardButton("📚 Выбрать из существующих заданий", callback_data="school_existing_homework")])
+    
+    keyboard.append([InlineKeyboardButton("📝 Загрузить новое задание", callback_data="school_new_homework")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите способ выдачи домашнего задания:",
+        reply_markup=reply_markup
+    )
+    return SCHOOL_HOMEWORK_CHOICE
+
+async def school_existing_homework(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает существующие задания для школьной программы"""
+    user_id = update.effective_user.id
+    db = Database()
+    exam_type = give_homework_temp[user_id]["exam_type"]
+    homeworks = db.get_homework_by_exam(exam_type)
+    
+    keyboard = []
+    for i in range(0, len(homeworks), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(homeworks):
+                hw = homeworks[i + j]
+                row.append(InlineKeyboardButton(hw.title, callback_data=f"give_hw_task_{hw.id}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.edit_text(
+        "Выберите задание для выдачи:",
+        reply_markup=reply_markup
+    )
+    return GIVE_HOMEWORK_CHOOSE_TASK
+
+async def school_new_homework_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает название нового домашнего задания"""
+    await update.callback_query.message.edit_text(
+        "Введите название домашнего задания:"
+    )
+    return SCHOOL_HOMEWORK_TITLE
+
+async def school_homework_title_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенное название домашнего задания"""
+    title = update.message.text
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["title"] = title
+    
+    await update.message.reply_text(
+        "Отправьте ссылку на домашнее задание:"
+    )
+    return SCHOOL_HOMEWORK_LINK
+
+async def school_homework_link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенную ссылку на домашнее задание"""
+    link = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    # Валидация URL
+    from core.database import is_valid_url
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return SCHOOL_HOMEWORK_LINK
+    
+    give_homework_temp[user_id]["link"] = link
+    
+    keyboard = [
+        [InlineKeyboardButton("📎 Прикрепить файл", callback_data="school_homework_file")],
+        [InlineKeyboardButton("⏭️ Пропустить", callback_data="school_homework_no_file")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Хотите прикрепить файл к домашнему заданию?",
+        reply_markup=reply_markup
+    )
+    return SCHOOL_HOMEWORK_FILE
+
+async def school_homework_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+
+    # Если это callback-кнопка — просим отправить файл
+    if hasattr(update, "callback_query") and update.callback_query:
+        await update.callback_query.edit_message_text("Пожалуйста, отправьте файл домашнего задания одним сообщением.")
+        return SCHOOL_HOMEWORK_FILE
+
+    # Если это сообщение с файлом
+    if hasattr(update, "message") and update.message and update.message.document:
+        file = await context.bot.get_file(update.message.document.file_id)
+        file_name = update.message.document.file_name
+        file_path = os.path.join("homework_files", file_name)
+        os.makedirs("homework_files", exist_ok=True)
+        await file.download_to_drive(file_path)
+        give_homework_temp[user_id]["file_path"] = file_path
+        await update.message.reply_text("✅ Файл успешно загружен!")
+        return await create_school_homework(update, context)
+
+    # Если что-то пошло не так
+    if hasattr(update, "message") and update.message:
+        await update.message.reply_text("❌ Пожалуйста, отправьте файл.")
+    return SCHOOL_HOMEWORK_FILE
+
+async def school_homework_no_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает пропуск файла домашнего задания"""
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["file_path"] = None
+    
+    # Создаем домашнее задание
+    return await create_school_homework(update, context)
+
+async def create_school_homework(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    db = Database()
+    title = give_homework_temp[user_id]["title"]
+    link = give_homework_temp[user_id]["link"]
+    file_path = give_homework_temp[user_id].get("file_path")
+    student_id = give_homework_temp[user_id]["student_id"]
+    success = db.add_homework(title, link, ExamType.SCHOOL, file_path)
+    if success:
+        homeworks = db.get_homework_by_exam(ExamType.SCHOOL)
+        homework = next((hw for hw in homeworks if hw.title == title and hw.link == link), None)
+        if homework:
+            db.assign_homework_to_student(student_id, homework.id)
+            student = db.get_student_by_id(student_id)
+            if student:
+                notif_text = f"Новое домашнее задание: {homework.title}"
+                db.add_notification(student.id, 'homework', notif_text, homework.link)
+                if db.has_unread_notifications(student.id):
+                    try:
+                        msg = await context.bot.send_message(
+                            chat_id=student.telegram_id,
+                            text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
+                        )
+                        db.add_push_message(student.id, msg.message_id)
+                        await send_student_menu_by_chat_id(context, student.telegram_id)
+                    except Exception as e:
+                        print(f"Ошибка push студенту {student.id}: {e}")
+            return await suggest_school_note_creation(update, context, homework, student)
+        else:
+            if hasattr(update, "message") and update.message:
+                await update.message.reply_text("❌ Ошибка при создании домашнего задания")
+            elif hasattr(update, "callback_query") and update.callback_query:
+                await update.callback_query.edit_message_text("❌ Ошибка при создании домашнего задания")
+            return ConversationHandler.END
+    else:
+        if hasattr(update, "message") and update.message:
+            await update.message.reply_text("❌ Ошибка при создании домашнего задания")
+        elif hasattr(update, "callback_query") and update.callback_query:
+            await update.callback_query.edit_message_text("❌ Ошибка при создании домашнего задания")
+        return ConversationHandler.END
+    give_homework_temp.pop(user_id, None)
+
+async def suggest_school_note_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, homework, student) -> int:
+    """Предлагает создать конспект для школьного домашнего задания"""
+    keyboard = [
+        [InlineKeyboardButton("📝 Создать конспект", callback_data="school_create_note")],
+        [InlineKeyboardButton("❌ Не создавать", callback_data="school_no_note")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            f"✅ Домашнее задание '{homework.title}' успешно создано и выдано ученику {student.name}!\n\n"
+            f"Хотите создать конспект к этому заданию?",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ Домашнее задание '{homework.title}' успешно создано и выдано ученику {student.name}!\n\n"
+            f"Хотите создать конспект к этому заданию?",
+            reply_markup=reply_markup
+        )
+    return SCHOOL_NOTE_CHOICE
+
+async def school_note_creation_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает выбор создания конспекта"""
+    query = update.callback_query
+    
+    if query.data == "school_create_note":
+        await query.message.edit_text("Введите название конспекта:")
+        return SCHOOL_NOTE_TITLE
+    else:
+        await query.message.edit_text("✅ Домашнее задание выдано без конспекта!")
+        await admin_menu(update, context)
+        return ConversationHandler.END
+
+async def school_note_title_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенное название конспекта"""
+    title = update.message.text
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["note_title"] = title
+    
+    await update.message.reply_text("Отправьте ссылку на конспект:")
+    return SCHOOL_NOTE_LINK
+
+async def school_note_link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенную ссылку на конспект"""
+    link = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    # Валидация URL
+    from core.database import is_valid_url
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return SCHOOL_NOTE_LINK
+    
+    give_homework_temp[user_id]["note_link"] = link
+    
+    keyboard = [
+        [InlineKeyboardButton("📎 Прикрепить файл", callback_data="school_note_file")],
+        [InlineKeyboardButton("⏭️ Пропустить", callback_data="school_note_no_file")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Хотите прикрепить файл к конспекту?",
+        reply_markup=reply_markup
+    )
+    return SCHOOL_NOTE_FILE
+
+async def school_note_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+
+    # Если это callback-кнопка — просим отправить файл
+    if hasattr(update, "callback_query") and update.callback_query:
+        await update.callback_query.edit_message_text("Пожалуйста, отправьте файл конспекта одним сообщением.")
+        return SCHOOL_NOTE_FILE
+
+    # Если это сообщение с файлом
+    if hasattr(update, "message") and update.message and update.message.document:
+        file = await context.bot.get_file(update.message.document.file_id)
+        file_name = update.message.document.file_name
+        file_path = os.path.join("notes_files", file_name)
+        os.makedirs("notes_files", exist_ok=True)
+        await file.download_to_drive(file_path)
+        give_homework_temp[user_id]["note_file_path"] = file_path
+        await update.message.reply_text("✅ Файл конспекта успешно загружен!")
+        return await create_school_note(update, context)
+
+    # Если что-то пошло не так
+    if hasattr(update, "message") and update.message:
+        await update.message.reply_text("❌ Пожалуйста, отправьте файл.")
+    return SCHOOL_NOTE_FILE
+
+async def school_note_no_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает пропуск файла конспекта"""
+    user_id = update.effective_user.id
+    give_homework_temp[user_id]["note_file_path"] = None
+    
+    # Создаем конспект
+    return await create_school_note(update, context)
+
+async def create_school_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Создает конспект для школьной программы"""
+    user_id = update.effective_user.id
+    db = Database()
+    
+    title = give_homework_temp[user_id]["note_title"]
+    link = give_homework_temp[user_id]["note_link"]
+    file_path = give_homework_temp[user_id].get("note_file_path")
+    student_id = give_homework_temp[user_id]["student_id"]
+    
+    # Создаем конспект
+    success = db.add_note(title, link, ExamType.SCHOOL, file_path)
+    
+    if success:
+        # Получаем созданный конспект
+        notes = db.get_notes_by_exam(ExamType.SCHOOL)
+        note = next((n for n in notes if n.title == title and n.link == link), None)
+        
+        if note:
+            # Назначаем конспект ученику
+            db.assign_note_to_student(student_id, note.id)
+            if hasattr(update, "message") and update.message:
+                await update.message.reply_text(f"✅ Конспект '{note.title}' успешно создан и выдан ученику!")
+            elif hasattr(update, "callback_query") and update.callback_query:
+                await update.callback_query.edit_message_text(f"✅ Конспект '{note.title}' успешно создан и выдан ученику!")
+            await admin_menu(update, context)
+        else:
+            if hasattr(update, "message") and update.message:
+                await update.message.reply_text("❌ Ошибка при создании конспекта")
+            elif hasattr(update, "callback_query") and update.callback_query:
+                await update.callback_query.edit_message_text("❌ Ошибка при создании конспекта")
+            await admin_menu(update, context)
+    else:
+        if hasattr(update, "message") and update.message:
+            await update.message.reply_text("❌ Ошибка при создании конспекта")
+        elif hasattr(update, "callback_query") and update.callback_query:
+            await update.callback_query.edit_message_text("❌ Ошибка при создании конспекта")
+        await admin_menu(update, context)
+    
+    # Очищаем временные данные
+    give_homework_temp.pop(user_id, None)
+    return ConversationHandler.END

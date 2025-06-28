@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from core.database import Database, ExamType
+from core.database import Database, ExamType, is_valid_url
 from telegram.error import BadRequest
 from handlers.admin_handlers import admin_menu
 import os
@@ -197,7 +197,21 @@ async def handle_note_title(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_note_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает ввод ссылки на конспект"""
     user_id = update.effective_user.id
-    temp_data[user_id]["link"] = update.message.text
+    link = update.message.text.strip()
+    
+    # Валидация URL
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return ENTER_LINK
+    
+    temp_data[user_id]["link"] = link
     
     keyboard = [
         [
@@ -537,7 +551,19 @@ async def handle_note_edit_link(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     
     note_id = temp_data[user_id]["note_id"]
-    new_link = update.message.text
+    new_link = update.message.text.strip()
+    
+    # Валидация URL
+    if not is_valid_url(new_link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return EDIT_LINK
     
     db = context.bot_data['db']
     note = db.get_note_by_id(note_id)

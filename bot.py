@@ -22,7 +22,14 @@ from handlers.admin_handlers import (
     handle_give_homework_variant,
     handle_give_variant_choose_exam,
     handle_give_variant_enter_link,
-    GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK
+    GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK,
+    school_homework_choice, school_existing_homework, school_new_homework_title,
+    school_homework_title_handler, school_homework_link_handler,
+    school_homework_file_handler, school_homework_no_file_handler,
+    school_note_creation_choice, school_note_title_handler, school_note_link_handler,
+    school_note_file_handler, school_note_no_file_handler,
+    SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE,
+    SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -319,12 +326,44 @@ def main():
                 CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
             ],
             GIVE_HOMEWORK_CHOOSE_STUDENT: [
-                CallbackQueryHandler(give_homework_choose_task, pattern="^give_hw_student_\d+$"),
+                CallbackQueryHandler(give_homework_choose_task, pattern="^give_hw_student_\\d+$"),
+                CallbackQueryHandler(school_homework_choice, pattern="^school_hw_student_\\d+$"),
                 CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
             ],
             GIVE_HOMEWORK_CHOOSE_TASK: [
-                CallbackQueryHandler(give_homework_assign, pattern="^give_hw_task_\d+$"),
+                CallbackQueryHandler(give_homework_assign, pattern="^give_hw_task_\\d+$"),
                 CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+            ],
+            # --- Школьная программа ---
+            SCHOOL_HOMEWORK_CHOICE: [
+                CallbackQueryHandler(school_existing_homework, pattern="^school_existing_homework$"),
+                CallbackQueryHandler(school_new_homework_title, pattern="^school_new_homework$"),
+                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+            ],
+            SCHOOL_HOMEWORK_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, school_homework_title_handler)
+            ],
+            SCHOOL_HOMEWORK_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, school_homework_link_handler)
+            ],
+            SCHOOL_HOMEWORK_FILE: [
+                CallbackQueryHandler(school_homework_file_handler, pattern="^school_homework_file$"),
+                CallbackQueryHandler(school_homework_no_file_handler, pattern="^school_homework_no_file$"),
+                MessageHandler(filters.Document.ALL, school_homework_file_handler)
+            ],
+            SCHOOL_NOTE_CHOICE: [
+                CallbackQueryHandler(school_note_creation_choice, pattern="^school_create_note$|^school_no_note$")
+            ],
+            SCHOOL_NOTE_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, school_note_title_handler)
+            ],
+            SCHOOL_NOTE_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, school_note_link_handler)
+            ],
+            SCHOOL_NOTE_FILE: [
+                CallbackQueryHandler(school_note_file_handler, pattern="^school_note_file$"),
+                CallbackQueryHandler(school_note_no_file_handler, pattern="^school_note_no_file$"),
+                MessageHandler(filters.Document.ALL, school_note_file_handler)
             ]
         },
         fallbacks=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")],

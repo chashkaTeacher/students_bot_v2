@@ -4,6 +4,7 @@ from core.database import Database
 from telegram.constants import ParseMode
 import os
 import datetime
+from core.database import format_moscow_time
 
 # Состояния для ConversationHandler
 ENTER_PASSWORD = 0
@@ -43,17 +44,24 @@ async def student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         [
             InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
             InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")
-        ],
-        [
+        ]
+    ]
+    
+    # Добавляем кнопку "Актуальный вариант" только для ОГЭ и ЕГЭ
+    if student.exam_type.value in ['ОГЭ', 'ЕГЭ']:
+        keyboard.append([
             InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")
-        ],
+        ])
+    
+    keyboard.extend([
         [
             InlineKeyboardButton(notif_text, callback_data="student_notifications")
         ],
         [
             InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")
         ]
-    ]
+    ])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Используем отображаемое имя из базы данных
@@ -286,12 +294,12 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
         # Оформляем дату выдачи
-        issued_date = variant.created_at.strftime('%d.%m.%Y') if variant.created_at else "-"
+        issued_date = format_moscow_time(variant.created_at, '%d.%m.%Y') if variant.created_at else "-"
         # Вычисляем ближайший следующий понедельник
         dt = variant.created_at or datetime.datetime.now()
         days_ahead = 0 if dt.weekday() == 0 else 7 - dt.weekday()
         next_monday = dt + datetime.timedelta(days=days_ahead)
-        deadline = next_monday.strftime('%d.%m.%Y')
+        deadline = format_moscow_time(next_monday, '%d.%m.%Y')
         # Текст сообщения
         text = (
             "📄 <b>Актуальный вариант</b>\n\n"
@@ -361,7 +369,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
-            dt = notif.created_at.strftime('%d.%m.%Y в %H:%M') if notif.created_at else ""
+            dt = format_moscow_time(notif.created_at)
             # Тип уведомления на кириллице с эмодзи
             if notif.type == 'homework':
                 notif_type = "📚 Домашнее задание"
@@ -372,7 +380,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             
             # Форматируем текст уведомления
             text = f"<b>{status}{notif_type}</b>\n"
-            text += f"📅 <i>{dt}</i>\n"
+            text += f"📅 <i>{dt}</i>\n\n"
             text += f"📝 {notif.text}"
             
             if notif.link:
@@ -429,7 +437,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
-            dt = notif.created_at.strftime('%d.%m.%Y в %H:%M') if notif.created_at else ""
+            dt = format_moscow_time(notif.created_at)
             # Тип уведомления на кириллице с эмодзи
             if notif.type == 'homework':
                 notif_type = "📚 Домашнее задание"
@@ -440,7 +448,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             
             # Форматируем текст уведомления
             text = f"<b>{status}{notif_type}</b>\n"
-            text += f"📅 <i>{dt}</i>\n"
+            text += f"📅 <i>{dt}</i>\n\n"
             text += f"📝 {notif.text}"
             
             if notif.link:
@@ -497,7 +505,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
-            dt = notif.created_at.strftime('%d.%m.%Y в %H:%M') if notif.created_at else ""
+            dt = format_moscow_time(notif.created_at)
             # Тип уведомления на кириллице с эмодзи
             if notif.type == 'homework':
                 notif_type = "📚 Домашнее задание"
@@ -508,7 +516,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             
             # Форматируем текст уведомления
             text = f"<b>{status}{notif_type}</b>\n"
-            text += f"📅 <i>{dt}</i>\n"
+            text += f"📅 <i>{dt}</i>\n\n"
             text += f"📝 {notif.text}"
             
             if notif.link:
@@ -822,19 +830,27 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
     # Считаем количество непрочитанных уведомлений
     unread_count = len(db.get_notifications(student.id, only_unread=True))
     notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    
     keyboard = [
         [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
         [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
-        [InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"), InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
-        [InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")],
+        [InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"), InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")]
+    ]
+    
+    # Добавляем кнопку "Актуальный вариант" только для ОГЭ и ЕГЭ
+    if student.exam_type.value in ['ОГЭ', 'ЕГЭ']:
+        keyboard.append([InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")])
+    
+    keyboard.extend([
         [InlineKeyboardButton(notif_text, callback_data="student_notifications")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
-    ]
+    ])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     display_name = student.display_name or student.name
     greeting = f"👋 Привет, {display_name}!"
     msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
-    db.update_student_menu_message_id(student.id, msg.message_id) 
+    db.update_student_menu_message_id(student.id, msg.message_id)
 
 async def show_student_notes_menu(update, context, student, page=0):
     db = context.bot_data['db']

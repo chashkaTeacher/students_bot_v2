@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from core.database import Database, ExamType
+from core.database import Database, ExamType, is_valid_url
 from telegram.error import BadRequest
 from handlers.admin_handlers import admin_menu
 import os
@@ -175,8 +175,22 @@ async def handle_homework_title(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_homework_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает ввод ссылки на домашнее задание"""
     user_id = update.effective_user.id
+    link = update.message.text.strip()
+    
+    # Валидация URL
+    if not is_valid_url(link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return ENTER_LINK
+    
     data = temp_data[user_id]
-    data["link"] = update.message.text
+    data["link"] = link
     
     keyboard = [
         [
@@ -517,7 +531,19 @@ async def handle_homework_edit_link(update: Update, context: ContextTypes.DEFAUL
         return ConversationHandler.END
     
     hw_id = temp_data[user_id]["hw_id"]
-    new_link = update.message.text
+    new_link = update.message.text.strip()
+    
+    # Валидация URL
+    if not is_valid_url(new_link):
+        await update.message.reply_text(
+            "❌ Неверный формат ссылки!\n\n"
+            "Ссылка должна быть в формате:\n"
+            "• https://example.com\n"
+            "• http://example.com\n"
+            "• https://t.me/username\n\n"
+            "Попробуйте еще раз:"
+        )
+        return EDIT_LINK
     
     db = context.bot_data['db']
     homework = db.get_homework_by_id(hw_id)

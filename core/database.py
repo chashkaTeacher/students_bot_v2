@@ -5,8 +5,67 @@ import enum
 import random
 import string
 import re
+import urllib.parse
+import pytz
 
 Base = declarative_base()
+
+def to_moscow_time(dt: datetime) -> datetime:
+    """Конвертирует время в московское время (UTC+3)"""
+    if dt is None:
+        return None
+    
+    # Если время уже с timezone, конвертируем его
+    if dt.tzinfo is not None:
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        return dt.astimezone(moscow_tz)
+    
+    # Если время без timezone, считаем что это UTC и конвертируем
+    utc_tz = pytz.UTC
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    utc_dt = utc_tz.localize(dt)
+    return utc_dt.astimezone(moscow_tz)
+
+def format_moscow_time(dt: datetime, format_str: str = '%d.%m.%Y в %H:%M') -> str:
+    """Форматирует время в московском времени"""
+    if dt is None:
+        return ""
+    
+    moscow_dt = to_moscow_time(dt)
+    return moscow_dt.strftime(format_str)
+
+def is_valid_url(url: str) -> bool:
+    """Проверяет, является ли строка валидным URL"""
+    if not url or not isinstance(url, str):
+        return False
+    
+    # Убираем пробелы в начале и конце
+    url = url.strip()
+    
+    # Проверяем, что URL не пустой
+    if not url:
+        return False
+    
+    try:
+        # Парсим URL
+        result = urllib.parse.urlparse(url)
+        
+        # Проверяем, что есть схема (http, https, ftp и т.д.)
+        if not result.scheme:
+            return False
+        
+        # Проверяем, что есть домен
+        if not result.netloc:
+            return False
+        
+        # Проверяем, что схема поддерживается
+        valid_schemes = ['http', 'https', 'ftp', 'ftps']
+        if result.scheme.lower() not in valid_schemes:
+            return False
+        
+        return True
+    except Exception:
+        return False
 
 class ExamType(enum.Enum):
     OGE = "ОГЭ"
@@ -278,12 +337,38 @@ class Database:
             session.close()
 
     def update_student_exam_type(self, student_id: int, new_exam_type: ExamType):
-        """Обновляет тип экзамена студента"""
+        """Обновляет тип экзамена студента и очищает нерелевантные назначения"""
         session = self.Session()
         try:
             student = session.query(Student).filter_by(id=student_id).first()
             if student:
+                old_exam_type = student.exam_type
                 student.exam_type = new_exam_type
+                
+                # Если тип экзамена изменился, очищаем нерелевантные назначения
+                if old_exam_type != new_exam_type:
+                    # Удаляем назначения домашних заданий старого типа экзамена
+                    old_homeworks = session.query(StudentHomework).join(Homework).filter(
+                        StudentHomework.student_id == student_id,
+                        Homework.exam_type == old_exam_type
+                    ).all()
+                    
+                    for sh in old_homeworks:
+                        session.delete(sh)
+                    
+                    # Удаляем назначения конспектов старого типа экзамена
+                    old_notes = session.query(StudentNote).join(Note).filter(
+                        StudentNote.student_id == student_id,
+                        Note.exam_type == old_exam_type
+                    ).all()
+                    
+                    for sn in old_notes:
+                        session.delete(sn)
+                    
+                    # Очищаем уведомления и push-сообщения
+                    session.query(Notification).filter_by(student_id=student_id).delete()
+                    session.query(PushMessage).filter_by(user_id=student_id).delete()
+                
                 session.commit()
         finally:
             session.close()
@@ -666,7 +751,7 @@ class Database:
             q = session.query(Notification).filter_by(student_id=student_id)
             if only_unread:
                 q = q.filter_by(is_read=False)
-            return q.order_by(Notification.created_at.desc()).all()
+            return q.order_by(Notification.created_at.asc()).all()
         finally:
             session.close()
 
