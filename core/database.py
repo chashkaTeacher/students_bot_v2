@@ -709,6 +709,50 @@ class Database:
         finally:
             session.close()
 
+    def update_homework_status(self, student_id: int, homework_id: int, status: str) -> bool:
+        """Обновляет статус домашнего задания для студента"""
+        session = self.Session()
+        try:
+            # Находим запись о назначении домашнего задания
+            student_homework = session.query(StudentHomework).filter_by(
+                student_id=student_id, 
+                homework_id=homework_id
+            ).first()
+            
+            if student_homework:
+                student_homework.status = status
+                session.commit()
+                return True
+            else:
+                return False
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_homework_status_for_student(self, student_id: int, exam_type: ExamType) -> dict:
+        """Получает статусы заданий ученика по номеру задания"""
+        session = self.Session()
+        try:
+            # Получаем все назначенные задания ученика данного типа экзамена
+            student_homeworks = session.query(StudentHomework).join(Homework).filter(
+                StudentHomework.student_id == student_id,
+                Homework.exam_type == exam_type
+            ).all()
+            
+            statuses = {}
+            for sh in student_homeworks:
+                homework = session.query(Homework).filter_by(id=sh.homework_id).first()
+                if homework:
+                    task_number = homework.get_task_number()
+                    if task_number != float('inf'):  # Исключаем задания без номера
+                        statuses[task_number] = sh.status
+            
+            return statuses
+        finally:
+            session.close()
+
     def get_homeworks_for_student(self, student_id: int) -> list:
         session = self.Session()
         try:

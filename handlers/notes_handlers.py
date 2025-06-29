@@ -483,18 +483,16 @@ async def handle_edit_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(
             text=f"🔗 Введите новую ссылку:\n"
                  f"Текущая ссылка: {note.link}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ Отмена", callback_data="admin_back")
-            ]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_back")]]),
+            disable_web_page_preview=True
         )
         return EDIT_LINK
     else:  # action == "title"
         await query.edit_message_text(
             text=f"📝 Введите новое название:\n"
                  f"Текущее название: {note.title}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ Отмена", callback_data="admin_back")
-            ]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_back")]]),
+            disable_web_page_preview=True
         )
         return EDIT_TITLE
 
@@ -598,9 +596,8 @@ async def handle_note_edit_link(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(
         text=f"✅ Ссылка успешно изменена!\n\n"
              f"🔗 Новая ссылка: {new_link}",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")
-        ]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад в меню", callback_data="admin_back")]]),
+        disable_web_page_preview=True
     )
     return ConversationHandler.END
 
@@ -699,40 +696,31 @@ async def show_notes_page(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     
     # Добавляем конспекты
     for i, note in enumerate(notes[start_idx:end_idx], start=1):
-        # Получаем имя файла, если он есть
         file_info = "❌ Нет файла"
         if note.file_path:
             file_name = os.path.basename(note.file_path)
             file_info = f"📎 Файл: {file_name}"
-        
-        # Форматируем ссылку, обрезая если она слишком длинная
-        link = note.link
+        link = note.link if note.link else ""
         if len(link) > 50:
             link = link[:47] + "..."
-        
-        message_lines.extend([
-            f"\n{start_idx + i}. 📝 {note.title}",
-            f"└─ 🔗 {link}",
-            f"└─ {file_info}"
-        ])
+        message_lines.append(f"\n{start_idx + i}. 📝 {note.title}")
+        if link:
+            message_lines.append(f"└─ <a href=\"{link}\">Ссылка</a>")
+        else:
+            message_lines.append("└─ Ссылка: —")
+        message_lines.append(f"└─ {file_info}")
 
-    # Добавляем информацию о страницах
-    message_lines.extend([
-        "",  # Пустая строка для разделения
-        f"📄 Страница {current_page + 1} из {total_pages}",
-        f"Показано конспектов: {start_idx + 1}-{end_idx} из {total_items}"
-    ])
-    
     # Формируем клавиатуру
     keyboard = []
     
     # Кнопки навигации
     nav_row = []
     if current_page > 0:
-        nav_row.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data="notes_page_prev"))
+        nav_row.append(InlineKeyboardButton("◀️", callback_data="notes_page_prev"))
+    nav_row.append(InlineKeyboardButton(f"{current_page+1}/{total_pages}", callback_data="noop"))
     if current_page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Следующая ➡️", callback_data="notes_page_next"))
-    if nav_row:
+        nav_row.append(InlineKeyboardButton("▶️", callback_data="notes_page_next"))
+    if len(nav_row) > 1:
         keyboard.append(nav_row)
     
     # Кнопка возврата в меню
@@ -745,7 +733,9 @@ async def show_notes_page(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     try:
         await query.edit_message_text(
             text=message_text,
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            disable_web_page_preview=True,
+            parse_mode='HTML'
         )
     except BadRequest as e:
         if "Message is not modified" in str(e):

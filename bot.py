@@ -14,11 +14,13 @@ from handlers.admin_handlers import (
     ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE,
     EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE,
     tasks_menu,
+    give_homework_menu,
     give_homework_choose_exam,
     give_homework_choose_student,
     give_homework_choose_task,
     give_homework_assign,
-    GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK,
+    give_homework_status_handler,
+    GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK, GIVE_HOMEWORK_STATUS,
     handle_give_homework_variant,
     handle_give_variant_choose_exam,
     handle_give_variant_enter_link,
@@ -29,7 +31,9 @@ from handlers.admin_handlers import (
     school_note_creation_choice, school_note_title_handler, school_note_link_handler,
     school_note_file_handler, school_note_no_file_handler,
     SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE,
-    SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE
+    SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE,
+    show_statistics_menu, handle_statistics_exam_choice, handle_statistics_student_choice,
+    STATISTICS_CHOOSE_EXAM, STATISTICS_CHOOSE_STUDENT, EDIT_TASK_STATUS
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -102,6 +106,10 @@ def main():
     db = Database()
     application.bot_data['db'] = db
 
+    # ГЛОБАЛЬНЫЕ обработчики для статистики (ставим до ConversationHandler-ов)
+    application.add_handler(CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_page_\\d+$"))
+    application.add_handler(CallbackQueryHandler(show_statistics_menu, pattern="^statistics_back$"))
+
     # Создаем главный обработчик для команды /start и ввода пароля
     main_handler = ConversationHandler(
         entry_points=[
@@ -160,7 +168,10 @@ def main():
             CallbackQueryHandler(handle_admin_actions, pattern="^add_note_"),
             CallbackQueryHandler(handle_admin_actions, pattern="^edit_type_"),
             CallbackQueryHandler(handle_admin_actions, pattern="^edit_student_"),
-            CallbackQueryHandler(handle_admin_actions, pattern="^delete_note_")
+            CallbackQueryHandler(handle_admin_actions, pattern="^delete_note_"),
+            CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_status_"),
+            CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_select_"),
+            CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_status_set_")
         ],
         states={
             EDIT_NAME: [
@@ -178,6 +189,11 @@ def main():
             ADD_NOTE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_note),
                 CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+            ],
+            EDIT_TASK_STATUS: [
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_status_"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_select_"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_task_status_set_")
             ]
         },
         fallbacks=[
@@ -319,26 +335,30 @@ def main():
 
     # Создаем обработчик для выдачи домашнего задания через меню администратора
     give_homework_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework_task$")],
+        entry_points=[CallbackQueryHandler(give_homework_menu, pattern="^admin_give_homework$")],
         states={
             GIVE_HOMEWORK_CHOOSE_EXAM: [
                 CallbackQueryHandler(give_homework_choose_student, pattern="^give_hw_exam_(OGE|EGE|SCHOOL)$"),
-                CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
+                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
             ],
             GIVE_HOMEWORK_CHOOSE_STUDENT: [
                 CallbackQueryHandler(give_homework_choose_task, pattern="^give_hw_student_\\d+$"),
                 CallbackQueryHandler(school_homework_choice, pattern="^school_hw_student_\\d+$"),
-                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+                CallbackQueryHandler(give_homework_menu, pattern="^admin_give_homework$")
             ],
             GIVE_HOMEWORK_CHOOSE_TASK: [
                 CallbackQueryHandler(give_homework_assign, pattern="^give_hw_task_\\d+$"),
-                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+                CallbackQueryHandler(give_homework_menu, pattern="^admin_give_homework$")
+            ],
+            GIVE_HOMEWORK_STATUS: [
+                CallbackQueryHandler(give_homework_status_handler, pattern="^hw_status_(completed|in_progress)$"),
+                CallbackQueryHandler(admin_menu, pattern="^admin_give_homework$")
             ],
             # --- Школьная программа ---
             SCHOOL_HOMEWORK_CHOICE: [
                 CallbackQueryHandler(school_existing_homework, pattern="^school_existing_homework$"),
                 CallbackQueryHandler(school_new_homework_title, pattern="^school_new_homework$"),
-                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$")
+                CallbackQueryHandler(give_homework_menu, pattern="^admin_give_homework$")
             ],
             SCHOOL_HOMEWORK_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, school_homework_title_handler)
@@ -366,7 +386,10 @@ def main():
                 MessageHandler(filters.Document.ALL, school_note_file_handler)
             ]
         },
-        fallbacks=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")],
+        fallbacks=[
+            CallbackQueryHandler(admin_menu, pattern="^admin_back$"),
+            CallbackQueryHandler(admin_menu, pattern="^admin_give_homework$")
+        ],
         name="give_homework",
         persistent=False
     )
@@ -389,6 +412,27 @@ def main():
         persistent=False
     )
 
+    # ConversationHandler для статистики
+    statistics_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(show_statistics_menu, pattern="^admin_stats$")],
+        states={
+            STATISTICS_CHOOSE_EXAM: [
+                CallbackQueryHandler(handle_statistics_exam_choice, pattern="^statistics_exam_(EGE|OGE)$"),
+                CallbackQueryHandler(handle_statistics_exam_choice, pattern="^statistics_exam_back$"),
+                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+            ],
+            STATISTICS_CHOOSE_STUDENT: [
+                CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_student_\\d+$"),
+                CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_page_\\d+$"),
+                CallbackQueryHandler(handle_statistics_exam_choice, pattern="^statistics_exam_back$"),
+                CallbackQueryHandler(admin_menu, pattern="^statistics_back$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(admin_menu, pattern="^admin_back$")],
+        name="statistics",
+        persistent=False
+    )
+
     # Регистрируем обработчики
     application.add_handler(main_handler)
     application.add_handler(add_student_handler)
@@ -398,10 +442,12 @@ def main():
     application.add_handler(notes_handler)     # Обработчик конспектов после заданий
     application.add_handler(give_homework_handler)
     application.add_handler(give_variant_handler)
+    application.add_handler(statistics_handler)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("admin", admin_menu))
-    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_)"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_).*$"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^roadmap_page_"))  # Обработчик навигации роадмапа
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
     
     async def daily_unread_notifications(context: ContextTypes.DEFAULT_TYPE):
@@ -415,7 +461,7 @@ def main():
                         text="🔔 У вас есть непрочитанные уведомления! Откройте меню 'Уведомления'."
                     )
                 except Exception as e:
-                    print(f"Ошибка напоминания студенту {student.id}: {e}")
+                    pass
 
     # Запускаем ежедневный job в 14:00 по Москве
     moscow_tz = pytz.timezone('Europe/Moscow')

@@ -4,6 +4,7 @@ from core.database import Database, ExamType, PendingNoteAssignment
 from handlers.student_handlers import student_menu, send_student_menu_by_chat_id
 import os
 import uuid
+import json
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -19,8 +20,11 @@ temp_data = {}
 
 GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK = range(100, 103)
 
+# Состояние для выбора статуса домашнего задания
+GIVE_HOMEWORK_STATUS = 103
+
 # Новые состояния для школьной программы
-SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE, SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE = range(103, 111)
+SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE, SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE = range(104, 112)
 
 give_homework_temp = {}
 
@@ -28,8 +32,23 @@ GIVE_VARIANT_CHOOSE_EXAM, GIVE_VARIANT_ENTER_LINK = 200, 201
 
 give_variant_temp = {}
 
-async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
-    """Показывает меню администратора"""
+# Новые состояния для статистики
+STATISTICS_CHOOSE_EXAM, STATISTICS_CHOOSE_STUDENT = 2000, 2001
+
+EDIT_TASK_STATUS = 3000
+
+def convert_status_from_db(status):
+    """Преобразует статус из базы данных в отображаемый"""
+    if status == "completed":
+        return "Пройдено"
+    elif status == "in_progress":
+        return "В процессе"
+    elif status == "not_passed":
+        return "Не пройдено"
+    else:
+        return status
+
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
     keyboard = [
         [
             InlineKeyboardButton("🎯 Выдать домашнее задание", callback_data="admin_give_homework")
@@ -57,6 +76,7 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) 
             "Выберите раздел:",
             reply_markup=reply_markup
         )
+    return ConversationHandler.END
 
 async def students_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
     """Показать меню управления учениками"""
@@ -250,17 +270,16 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     """Обрабатывает действия администратора"""
     query = update.callback_query
     
-    # Обрабатываем возможную ошибку устаревшего callback query
     try:
         await query.answer()
     except Exception as e:
-        # Игнорируем ошибку устаревшего query
         pass
     
-    action = query.data
+    if query.data == "admin_stats":
+        return await show_statistics_menu(update, context)
     
-    if action.startswith("edit_name_"):
-        student_id = int(action.split("_")[-1])
+    if query.data.startswith("edit_name_"):
+        student_id = int(query.data.split("_")[-1])
         temp_data[update.effective_user.id] = {"student_id": student_id}
         
         db = context.bot_data['db']
@@ -274,8 +293,8 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return EDIT_NAME
         
-    elif action.startswith("edit_link_"):
-        student_id = int(action.split("_")[-1])
+    elif query.data.startswith("edit_link_"):
+        student_id = int(query.data.split("_")[-1])
         temp_data[update.effective_user.id] = {"student_id": student_id}
         
         db = context.bot_data['db']
@@ -392,14 +411,44 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"info_type_{student.exam_type.name}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Собираем данные для красивого вывода
+        name = student.name or '—'
+        exam = student.exam_type.value if student.exam_type else '—'
+        telegram_id = student.telegram_id or '—'
+        password = student.password or '—'
+        lesson_link = student.lesson_link or ''
+        lesson_link_block = f'<a href="{lesson_link}">Ссылка</a>' if lesson_link else '—'
+        lesson_date = getattr(student, 'lesson_date', None) or '—'
+        description = getattr(student, 'description', None) or '—'
+
+        # Получаем актуальное домашнее задание
+        db = context.bot_data['db']
+        homeworks = db.get_homeworks_for_student_with_filter(student.id)
+        if homeworks:
+            hw = homeworks[-1][0]
+            hw_link = hw.link or ''
+            homework_block = f'<a href="{hw_link}">Ссылка</a>' if hw_link else '—'
+        else:
+            homework_block = '—'
+
+        info_text = (
+            f'<b>👤 Информация об ученике</b>\n'
+            f'━━━━━━━━━━━━━━\n'
+            f'📝 <b>Имя:</b> {name}\n'
+            f'📚 <b>Экзамен:</b> {exam}\n'
+            f'🆔 <b>Telegram ID:</b> {telegram_id}\n'
+            f'🔑 <b>Пароль:</b> <code>{password}</code>\n'
+            f'━━━━━━━━━━━━━━\n'
+            f'🔗 <b>Ссылка на занятие:</b> {lesson_link_block}\n'
+            f'📅 <b>Дата занятия:</b> {lesson_date}\n'
+            f'📝 <b>Описание:</b> {description}\n'
+            f'📋 <b>Домашнее задание:</b> {homework_block}'
+        )
         await query.message.edit_text(
-            f"👤 Информация о студенте:\n\n"
-            f"📝 Имя: {student.name}\n"
-            f"📚 Экзамен: {student.exam_type.value}\n"
-            f"🆔 Telegram ID: {student.telegram_id or 'Не привязан'}\n"
-            f"🔗 Ссылка на занятие: {student.lesson_link or 'Не указана'}\n"
-            f"📝 Заметки: {student.notes or 'Нет заметок'}",
-            reply_markup=reply_markup
+            info_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML',
+            disable_web_page_preview=True
         )
         return ConversationHandler.END
     elif query.data.startswith("delete_type_"):
@@ -601,6 +650,9 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             [
                 InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
                 InlineKeyboardButton("📝 Добавить заметку", callback_data=f"add_note_{student_id}")
+            ],
+            [
+                InlineKeyboardButton("🗺️ Изменить статус задания", callback_data=f"edit_task_status_{student_id}")
             ]
         ]
         
@@ -842,6 +894,76 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         student = db.get_student_by_id(student_id)
         await query.edit_message_text(f"📚 Выберите конспект для ученика {student.name}:\n✅ - уже выдан\n📚 - доступен для выдачи", reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
+
+    elif query.data.startswith("edit_task_status_"):
+        parts = query.data.split("_")
+        # edit_task_status_{student_id}_page_{page_num} или edit_task_status_{student_id}
+        student_id = int(parts[3])
+        page = 0
+        if len(parts) > 4 and parts[4] == "page":
+            page = int(parts[5])
+        db = context.bot_data['db']
+        student = db.get_student_by_id(student_id)
+        if not student:
+            await query.message.edit_text("❌ Студент не найден!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit")]]))
+            return EDIT_TASK_STATUS
+        if student.exam_type.value == 'ЕГЭ':
+            roadmap = [
+                (1, '🖊️'), (4, '🖊️'), (11, '🖊️💻'), (7, '🖊️💻'), (10, '📝'), (3, '📊'), (18, '📊'), (22, '📊'),
+                (9, '📊💻'), ('Python', '🐍'), (2, '🐍'), (15, '🐍'), (6, '🐍'), (14, '🐍'), (5, '🐍'), (12, '🐍'),
+                (8, '🐍'), (13, '🐍'), (16, '🐍'), (23, '🐍'), ('19-21', '🖊️💻'), (25, '🐍'), (27, '🐍'), (24, '🐍'), (26, '📊💻')
+            ]
+        elif student.exam_type.value == 'ОГЭ':
+            roadmap = [
+                (1, '🖊️'), (2, '🖊️'), (4, '🖊️'), (9, '🖊️'), (7, '🖊️'), (8, '🖊️'), (10, '🖊️'), (5, '🖊️'), (3, '🖊️'), (6, '🖊️'),
+                (11, '📁'), (12, '📁'), ('13.1', '🗂️'), ('13.2', '🗂️'), (14, '🗂️'), (15, '🐍'), ('Python', '🐍'), (16, '🐍')
+            ]
+        else:
+            await query.message.edit_text("Для школьной программы изменение статусов недоступно.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")]]))
+            return EDIT_TASK_STATUS
+        # Получаем статусы из базы
+        statuses = db.get_homework_status_for_student(student_id, student.exam_type)
+        per_page = 8
+        total = len(roadmap)
+        max_page = (total + per_page - 1) // per_page - 1
+        page = max(0, min(page, max_page))
+        start = page * per_page
+        end = start + per_page
+        roadmap_page = roadmap[start:end]
+        keyboard = []
+        for i in range(0, len(roadmap_page), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(roadmap_page):
+                    num, emoji = roadmap_page[i + j]
+                    status = statuses.get(num)
+                    if status is None:
+                        status = statuses.get(str(num))
+                    if status is None:
+                        status = "Не пройдено"
+                    status = convert_status_from_db(status)
+                    if status == "Пройдено":
+                        status_emoji = "✅"
+                    elif status == "В процессе":
+                        status_emoji = "🔄"
+                    else:
+                        status_emoji = "❌"
+                    button_text = f"Задание {num} {status_emoji}"
+                    row.append(InlineKeyboardButton(button_text, callback_data=f"edit_task_select_{student_id}_{json.dumps(str(num))}_page_{page}"))
+            keyboard.append(row)
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"edit_task_status_{student_id}_page_{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"edit_task_status_{student_id}_page_{page+1}"))
+        keyboard.append(nav_row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")])
+        await query.message.edit_text(
+            f"Выберите задание для изменения статуса:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return EDIT_TASK_STATUS
 
     # Для всех остальных случаев
     return ConversationHandler.END
@@ -1165,10 +1287,15 @@ async def give_homework_assign(update: Update, context: ContextTypes.DEFAULT_TYP
     if success:
         student = db.get_student_by_id(student_id)
         homework = db.get_homework_by_id(homework_id)
+        
+        # Сохраняем данные для следующего шага
+        give_homework_temp[user_id]["homework_id"] = homework_id
+        
         if was_assigned:
             message_text = "✅ Домашнее задание повторно выдано (обновлена дата назначения)!"
         else:
             message_text = "✅ Домашнее задание успешно выдано!"
+        
         # Добавляем уведомление в БД
         if student:
             notif_text = f"Новое домашнее задание: {homework.title}" if homework else "Новое домашнее задание!"
@@ -1184,14 +1311,105 @@ async def give_homework_assign(update: Update, context: ContextTypes.DEFAULT_TYP
                     # После push отправляем меню корректно по chat_id
                     await send_student_menu_by_chat_id(context, student.telegram_id)
                 except Exception as e:
-                    print(f"Ошибка push студенту {student.id}: {e}")
+                    pass
         
-        # Предлагаем конспекты для выдачи
-        await suggest_notes_for_homework(update, context, homework, student)
-        return ConversationHandler.END
+        # Проверяем тип экзамена
+        if homework.exam_type == ExamType.SCHOOL:
+            # Для школьной программы сразу предлагаем конспекты
+            await suggest_notes_for_homework(update, context, homework, student)
+            return ConversationHandler.END
+        else:
+            # Для ОГЭ и ЕГЭ показываем меню выбора статуса
+            # Сохраняем данные для следующего шага
+            give_homework_temp[user_id]["homework_id"] = homework_id
+            
+            # Показываем меню выбора статуса
+            keyboard = [
+                [InlineKeyboardButton("✅ Пройдено", callback_data="hw_status_completed")],
+                [InlineKeyboardButton("🔄 В процессе", callback_data="hw_status_in_progress")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]
+            ]
+            
+            await update.callback_query.message.edit_text(
+                f"{message_text}\n\n"
+                f"📝 Задание: {homework.title}\n"
+                f"👤 Ученик: {student.name}\n\n"
+                f"Выберите статус для этого задания:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return GIVE_HOMEWORK_STATUS
     
     give_homework_temp.pop(user_id, None)
     return ConversationHandler.END
+
+async def give_homework_status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает выбор статуса домашнего задания"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    # Проверяем наличие данных
+    if user_id not in give_homework_temp:
+        await query.edit_message_text(
+            "❌ Ошибка: данные не найдены. Начните процесс заново.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        return ConversationHandler.END
+    
+    data = give_homework_temp[user_id]
+    student_id = data.get("student_id")
+    homework_id = data.get("homework_id")
+    
+    if not student_id or not homework_id:
+        await query.edit_message_text(
+            "❌ Ошибка: неполные данные. Начните процесс заново.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        give_homework_temp.pop(user_id, None)
+        return ConversationHandler.END
+    
+    db = Database()
+    student = db.get_student_by_id(student_id)
+    homework = db.get_homework_by_id(homework_id)
+    
+    if not student or not homework:
+        await query.edit_message_text(
+            "❌ Ошибка: ученик или задание не найдены.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        give_homework_temp.pop(user_id, None)
+        return ConversationHandler.END
+    
+    # Определяем статус на основе выбранной кнопки
+    if query.data == "hw_status_completed":
+        status = "completed"
+        status_text = "✅ Пройдено"
+    elif query.data == "hw_status_in_progress":
+        status = "in_progress"
+        status_text = "🔄 В процессе"
+    else:
+        # Если нажата кнопка "Назад"
+        give_homework_temp.pop(user_id, None)
+        await admin_menu(update, context)
+        return ConversationHandler.END
+    
+    # Обновляем статус в базе данных
+    success = db.update_homework_status(student_id, homework_id, status)
+    
+    if success:
+        # Предлагаем конспекты для выдачи (только для ОГЭ и ЕГЭ)
+        await suggest_notes_for_homework(update, context, homework, student)
+        # Очищаем временные данные
+        give_homework_temp.pop(user_id, None)
+        return ConversationHandler.END
+    else:
+        await query.edit_message_text(
+            "❌ Ошибка при обновлении статуса.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]])
+        )
+        give_homework_temp.pop(user_id, None)
+        return ConversationHandler.END
 
 async def suggest_notes_for_homework(update: Update, context: ContextTypes.DEFAULT_TYPE, homework, student):
     """Предлагает конспекты для выдачи после назначения домашнего задания"""
@@ -1443,6 +1661,7 @@ async def create_school_homework(update: Update, context: ContextTypes.DEFAULT_T
         if homework:
             db.assign_homework_to_student(student_id, homework.id)
             student = db.get_student_by_id(student_id)
+            
             if student:
                 notif_text = f"Новое домашнее задание: {homework.title}"
                 db.add_notification(student.id, 'homework', notif_text, homework.link)
@@ -1453,9 +1672,12 @@ async def create_school_homework(update: Update, context: ContextTypes.DEFAULT_T
                             text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
                         )
                         db.add_push_message(student.id, msg.message_id)
-                        await send_student_menu_by_chat_id(context, student.telegram_id)
+                        # НЕ обновляем меню для школьной программы
+                        # await send_student_menu_by_chat_id(context, student.telegram_id)
                     except Exception as e:
-                        print(f"Ошибка push студенту {student.id}: {e}")
+                        pass
+            
+            # Для школьной программы сразу предлагаем создать конспект
             return await suggest_school_note_creation(update, context, homework, student)
         else:
             if hasattr(update, "message") and update.message:
@@ -1619,3 +1841,246 @@ async def create_school_note(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Очищаем временные данные
     give_homework_temp.pop(user_id, None)
     return ConversationHandler.END
+
+# --- Хэндлеры для статистики ---
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+async def show_statistics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("ОГЭ", callback_data="statistics_exam_OGE"),
+         InlineKeyboardButton("ЕГЭ", callback_data="statistics_exam_EGE")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text("Выберите экзамен для просмотра статистики:", reply_markup=reply_markup)
+    return STATISTICS_CHOOSE_EXAM
+
+async def handle_statistics_exam_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if query.data == "statistics_exam_back":
+        return await show_statistics_menu(update, context)
+    exam_type = query.data.split('_')[-1]
+    context.user_data['statistics_exam'] = exam_type
+    db = context.bot_data['db']
+    students = db.get_students_by_exam_type(ExamType[exam_type])
+    if not students:
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="statistics_exam_back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text("Нет учеников для выбранного экзамена.", reply_markup=reply_markup)
+        return STATISTICS_CHOOSE_EXAM
+    keyboard = []
+    row = []
+    for i, student in enumerate(students, 1):
+        row.append(InlineKeyboardButton(student.name, callback_data=f"statistics_student_{student.id}"))
+        if i % 2 == 0:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="statistics_back")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text("Выберите ученика:", reply_markup=reply_markup)
+    return STATISTICS_CHOOSE_STUDENT
+
+async def handle_statistics_student_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    student_id = int(query.data.split('_')[-1]) if 'statistics_student_' in query.data else context.user_data.get('statistics_student_id')
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    exam_type = context.user_data.get('statistics_exam', 'EGE')
+    exam_label = 'ЕГЭ' if exam_type == 'EGE' else 'ОГЭ'
+    page = 0
+    if 'statistics_page_' in query.data:
+        page = int(query.data.split('_')[-1])
+    context.user_data['statistics_student_id'] = student_id
+    context.user_data['statistics_page'] = page
+
+    # --- ФИКС: если нет нужных данных, возвращаем к выбору экзамена ---
+    if not student_id or not exam_type or not student:
+        await show_statistics_menu(update, context)
+        return STATISTICS_CHOOSE_EXAM
+
+    if exam_type == 'EGE':
+        roadmap = [
+            (1, '🖊️'), (4, '🖊️'), (11, '🖊️💻'), (7, '🖊️💻'), (10, '📝'), (3, '📊'), (18, '📊'), (22, '📊'),
+            (9, '📊💻'), ('Python', '🐍'), (2, '🐍'), (15, '🐍'), (6, '🐍'), (14, '🐍'), (5, '🐍'), (12, '🐍'),
+            (8, '🐍'), (13, '🐍'), (16, '🐍'), (23, '🐍'), ('19-21', '🖊️💻'), (25, '🐍'), (27, '🐍'), (24, '🐍'), (26, '📊💻')
+        ]
+        
+        # Получаем реальные статусы из базы данных
+        real_statuses = db.get_homework_status_for_student(student.id, ExamType.EGE)
+        
+        tasks = []
+        primary_score = 0
+        for idx, (num, emoji) in enumerate(roadmap, 1):
+            # Получаем статус из базы данных или используем "Не пройдено" по умолчанию
+            status = real_statuses.get(num)
+            # Преобразуем статусы из базы в читаемый вид
+            if status == 'completed' or status == 'Пройдено':
+                status = 'Пройдено'
+            elif status == 'in_progress' or status == 'В процессе':
+                status = 'В процессе'
+            else:
+                status = 'Не пройдено'
+            # Поиск конспекта
+            note_line = ''
+            if status in ('Пройдено', 'В процессе'):
+                notes = db.get_notes_by_exam(ExamType.EGE)
+                note = next((n for n in notes if n.get_task_number() == num), None)
+                if note:
+                    note_line = f"└─ <a href='{note.link}'>Конспект</a>"
+            if num in (26, 27):
+                max_score = 2
+            elif isinstance(num, int) and 1 <= num <= 25:
+                max_score = 1
+            else:
+                max_score = 0
+            if num == 'Python' or num == '19-21':
+                title = f"{emoji} {num}"
+            else:
+                title = f"{emoji} Задание {num}"
+            if status == 'Пройдено':
+                primary_score += max_score
+                status_emoji = '✅'
+            elif status == 'В процессе':
+                status_emoji = '🔄'
+            else:
+                status_emoji = '❌'
+            status_text = f'{status} {status_emoji}'
+            task_block = f"{title}\n"
+            if note_line:
+                task_block += note_line + "\n"
+            task_block += f"└─ Статус: {status_text}"
+            tasks.append(task_block)
+        
+        # Таблица перевода первичных баллов в тестовые
+        primary_to_test = {
+            1: 7, 2: 14, 3: 20, 4: 27, 5: 34, 6: 40, 7: 43, 8: 46, 9: 48, 10: 51, 11: 54, 12: 56, 13: 59, 14: 62, 15: 64, 16: 67, 17: 70, 18: 72, 19: 75, 20: 78, 21: 80, 22: 83, 23: 85, 24: 88, 25: 90, 26: 93, 27: 95, 28: 98, 29: 100
+        }
+        test_score = primary_to_test.get(primary_score, 0)
+        per_page = 5
+        total_pages = (len(tasks) - 1) // per_page + 1
+        start = page * per_page
+        end = start + per_page
+        page_tasks = tasks[start:end]
+        tasks_text = "\n\n".join(page_tasks)
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"statistics_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"statistics_page_{page+1}"))
+        progress_text = (
+            f"<b>Прогресс ученика {student.name} ({exam_label}):</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"<b>🏅 Первичный балл: {primary_score}</b>\n"
+            f"<b>🎯 Тестовый балл: {test_score}</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{tasks_text}"
+        )
+    elif exam_type == 'OGE':
+        roadmap = [
+            (1, '🖊️'), (2, '🖊️'), (4, '🖊️'), (9, '🖊️'), (7, '🖊️'), (8, '🖊️'), (10, '🖊️'), (5, '🖊️'), (3, '🖊️'), (6, '🖊️'),
+            (11, '📁'), (12, '📁'), ('13.1', '🗂️'), ('13.2', '🗂️'), (14, '🗂️'), (15, '🐍'), ('Python', '🐍'), (16, '🐍')
+        ]
+        
+        # Получаем реальные статусы из базы данных
+        real_statuses = db.get_homework_status_for_student(student.id, ExamType.OGE)
+        
+        tasks = []
+        score = 0
+        passed_13 = False
+        for num, emoji in roadmap:
+            # Получаем статус из базы данных или используем "Не пройдено" по умолчанию
+            status = real_statuses.get(num)
+            # Преобразуем статусы из базы в читаемый вид
+            if status == 'completed' or status == 'Пройдено':
+                status = 'Пройдено'
+            elif status == 'in_progress' or status == 'В процессе':
+                status = 'В процессе'
+            else:
+                status = 'Не пройдено'
+            # Поиск конспекта
+            note_line = ''
+            if status in ('Пройдено', 'В процессе'):
+                notes = db.get_notes_by_exam(ExamType.OGE)
+                note = next((n for n in notes if n.get_task_number() == num), None)
+                if note:
+                    note_line = f"└─ <a href='{note.link}'>Конспект</a>"
+            if num == 'Python':
+                title = f"{emoji} Python"
+                if status == 'Пройдено':
+                    score += 2
+            elif num in ('13.1', '13.2'):
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    passed_13 = True
+            elif num == 14:
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 3
+            elif num in (15, 16):
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 2
+            else:
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 1
+            if status == 'Пройдено':
+                status_emoji = '✅'
+            elif status == 'В процессе':
+                status_emoji = '🔄'
+            else:
+                status_emoji = '❌'
+            status_text = f'{status} {status_emoji}'
+            task_block = f"{title}\n"
+            if note_line:
+                task_block += note_line + "\n"
+            task_block += f"└─ Статус: {status_text}"
+            tasks.append(task_block)
+        if passed_13:
+            score += 2
+        per_page = 5
+        total_pages = (len(tasks) - 1) // per_page + 1
+        start = page * per_page
+        end = start + per_page
+        page_tasks = tasks[start:end]
+        tasks_text = "\n\n".join(page_tasks)
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"statistics_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"statistics_page_{page+1}"))
+        if score <= 4:
+            grade = '2'
+        elif score <= 10:
+            grade = '3'
+        elif score <= 16:
+            grade = '4'
+        else:
+            grade = '5'
+        progress_text = (
+            f"<b>Прогресс ученика {student.name} ({exam_label}):</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"<b>🏅 Текущий балл: {score}</b>\n"
+            f"<b>📊 Оценка: {grade}</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{tasks_text}"
+        )
+    else:
+        tasks_text = "\n\n".join([f"📝 Задание {i+1}\n└─ Статус: ❌ Не пройдено" for i in range(5)])
+        nav_buttons = []
+    
+    keyboard = []
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="statistics_exam_back")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.edit_text(progress_text, reply_markup=reply_markup, parse_mode='HTML', disable_web_page_preview=True)
+    return STATISTICS_CHOOSE_STUDENT

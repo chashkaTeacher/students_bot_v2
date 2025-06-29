@@ -34,33 +34,31 @@ async def student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     unread_count = len(db.get_notifications(student.id, only_unread=True)) if student else 0
     notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
     
-    keyboard = [
-        [
-            InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")
-        ],
-        [
-            InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")
-        ],
-        [
-            InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
-            InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")
+    if student.exam_type.value == 'Школьная программа':
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
         ]
-    ]
-    
-    # Добавляем кнопку "Актуальный вариант" только для ОГЭ и ЕГЭ
-    if student.exam_type.value in ['ОГЭ', 'ЕГЭ']:
-        keyboard.append([
-            InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")
-        ])
-    
-    keyboard.extend([
-        [
-            InlineKeyboardButton(notif_text, callback_data="student_notifications")
-        ],
-        [
-            InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")
+    else:
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [
+                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
+                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
+            ],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
         ]
-    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -265,11 +263,19 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         )
     elif query.data == "student_join_lesson":
         if student and student.lesson_link:
+            # Заглушка для даты следующего занятия (пока что показываем "скоро")
+            next_lesson_date = "скоро"
+            
             await query.edit_message_text(
-                text=f"🔗 Ссылка на ваше занятие:\n{student.lesson_link}",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Назад", callback_data="student_back")
-                ]])
+                text=f"📅 <b>Следующее занятие</b>\n\n"
+                     f"🗓️ Дата: {next_lesson_date}\n"
+                     f"⏰ Время: уточняется\n\n"
+                     f"Нажмите кнопку ниже, чтобы подключиться к занятию:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎥 Подключиться к занятию", url=student.lesson_link)],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
+                ]),
+                parse_mode=ParseMode.HTML
             )
         else:
             await query.edit_message_text(
@@ -363,9 +369,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         page = int(context.user_data.get('notif_page', 0))
         per_page = 5
         total = len(notifications)
-        start = page * per_page
-        end = start + per_page
-        page_notifications = notifications[start:end]
+        max_page = (total + per_page - 1) // per_page - 1
+        page_notifications = notifications[page * per_page:min(page * per_page + per_page, total)]
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
@@ -394,14 +399,19 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_buttons = []
-        if start > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
-        if end < total:
-            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
+        if len(nav_row) > 1:
+            keyboard = [nav_row]
+        else:
+            keyboard = []
         buttons = []
-        if nav_buttons:
-            buttons.append(nav_buttons)
+        if nav_row:
+            buttons.append(nav_row)
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
@@ -431,9 +441,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         page = int(context.user_data.get('notif_page', 0))
         per_page = 5
         total = len(notifications)
-        start = page * per_page
-        end = start + per_page
-        page_notifications = notifications[start:end]
+        max_page = (total + per_page - 1) // per_page - 1
+        page_notifications = notifications[page * per_page:min(page * per_page + per_page, total)]
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
@@ -462,14 +471,19 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_buttons = []
-        if start > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
-        if end < total:
-            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
+        if len(nav_row) > 1:
+            keyboard = [nav_row]
+        else:
+            keyboard = []
         buttons = []
-        if nav_buttons:
-            buttons.append(nav_buttons)
+        if nav_row:
+            buttons.append(nav_row)
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
@@ -499,9 +513,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         page = int(context.user_data.get('notif_page', 0))
         per_page = 5
         total = len(notifications)
-        start = page * per_page
-        end = start + per_page
-        page_notifications = notifications[start:end]
+        max_page = (total + per_page - 1) // per_page - 1
+        page_notifications = notifications[page * per_page:min(page * per_page + per_page, total)]
         notif_texts = []
         for i, notif in enumerate(page_notifications, 1):
             status = "🆕 " if not notif.is_read else "📋 "
@@ -530,14 +543,19 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_buttons = []
-        if start > 0:
-            nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="notif_prev"))
-        if end < total:
-            nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="notif_next"))
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
+        if len(nav_row) > 1:
+            keyboard = [nav_row]
+        else:
+            keyboard = []
         buttons = []
-        if nav_buttons:
-            buttons.append(nav_buttons)
+        if nav_row:
+            buttons.append(nav_row)
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
@@ -674,6 +692,27 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             await show_student_homework_menu(update, context, student, page=page+1)
         else:
             await query.answer("Это последняя страница")
+        return
+    elif query.data == "student_roadmap":
+        # Показываем роадмап для текущего ученика
+        await show_student_roadmap(update, context, student, page=int(context.user_data.get('roadmap_page', 0)))
+        return
+    elif query.data.startswith("roadmap_page_"):
+        # Обработка навигации по страницам роадмапа
+        page = int(query.data.split("_")[-1])
+        context.user_data['roadmap_page'] = page
+        await show_student_roadmap(update, context, student, page=page)
+        return
+    elif query.data == "student_homework_menu":
+        buttons = [
+            [InlineKeyboardButton("📋 Задачи", callback_data="student_homework")],
+            [InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
+        ]
+        await query.edit_message_text(
+            text="📚 Домашнее задание\n\nВыберите действие:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
         return
 
 async def handle_display_name_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -814,7 +853,6 @@ async def handle_student_link_edit(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END 
 
 async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    """Отправляет меню студента по chat_id (без update), удаляя предыдущее меню если оно есть"""
     db = context.bot_data['db']
     student = db.get_student_by_telegram_id(chat_id)
     if not student:
@@ -825,27 +863,34 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=last_menu_id)
         except Exception as e:
-            # Игнорируем ошибку, если сообщение уже удалено или не найдено
             pass
-    # Считаем количество непрочитанных уведомлений
     unread_count = len(db.get_notifications(student.id, only_unread=True))
     notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
-    
-    keyboard = [
-        [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
-        [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
-        [InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"), InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")]
-    ]
-    
-    # Добавляем кнопку "Актуальный вариант" только для ОГЭ и ЕГЭ
-    if student.exam_type.value in ['ОГЭ', 'ЕГЭ']:
-        keyboard.append([InlineKeyboardButton("📄 Актуальный вариант", callback_data="student_current_variant")])
-    
-    keyboard.extend([
-        [InlineKeyboardButton(notif_text, callback_data="student_notifications")],
-        [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
-    ])
-    
+    if student.exam_type.value == 'Школьная программа':
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [
+                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
+                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
+            ],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+        ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     display_name = student.display_name or student.name
     greeting = f"👋 Привет, {display_name}!"
@@ -888,13 +933,14 @@ async def show_student_notes_menu(update, context, student, page=0):
                 row.append(InlineKeyboardButton(button_text, callback_data=f"student_note_{note.id}"))
         if row:
             keyboard.append(row)
-    nav_buttons = []
+    nav_row = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="student_notes_prev"))
-    if end < total:
-        nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="student_notes_next"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+        nav_row.append(InlineKeyboardButton("◀️", callback_data="student_notes_prev"))
+    nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+    if page < max_page:
+        nav_row.append(InlineKeyboardButton("▶️", callback_data="student_notes_next"))
+    if len(nav_row) > 1:
+        keyboard.append(nav_row)
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
     header = f"📚 <b>Ваши конспекты</b>\n"
     header += "─────────────\n"
@@ -932,48 +978,249 @@ async def show_student_homework_menu(update, context, student, page=0):
     old_homeworks = [hw for hw, _ in homeworks_data if hw.id != current_homework_id]
     current_homework = next((hw for hw, _ in homeworks_data if hw.id == current_homework_id), None)
     
-    per_page = 4  # 4 старых задания на страницу
-    total_old = len(old_homeworks)
-    max_page = (total_old + per_page - 1) // per_page - 1 if total_old > 0 else 0
-    page = max(0, min(page, max_page))
-    context.user_data['homework_page'] = page
-    
-    start = page * per_page
-    end = start + per_page
-    old_on_page = old_homeworks[start:end]
-    
     keyboard = []
-    # Старые задания по 2 в строке
-    for i in range(0, len(old_on_page), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(old_on_page):
-                homework = old_on_page[i + j]
-                short_title = homework.title[:20] + ('…' if len(homework.title) > 20 else '')
-                button_text = f"📚 {short_title}"
-                row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
-        if row:
-            keyboard.append(row)
-    # Кнопки навигации
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Пред.", callback_data="student_homework_prev"))
-    if end < total_old:
-        nav_buttons.append(InlineKeyboardButton("След. ▶️", callback_data="student_homework_next"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+    
+    # Показываем старые задания только если они есть и включен показ старых заданий
+    if old_homeworks and student.show_old_homework:
+        per_page = 4  # 4 старых задания на страницу
+        total_old = len(old_homeworks)
+        max_page = (total_old + per_page - 1) // per_page - 1 if total_old > 0 else 0
+        page = max(0, min(page, max_page))
+        context.user_data['homework_page'] = page
+        
+        start = page * per_page
+        end = start + per_page
+        old_on_page = old_homeworks[start:end]
+        
+        # Старые задания по 2 в строке
+        for i in range(0, len(old_on_page), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(old_on_page):
+                    homework = old_on_page[i + j]
+                    short_title = homework.title[:20] + ('…' if len(homework.title) > 20 else '')
+                    button_text = f"📚 {short_title}"
+                    row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
+            if row:
+                keyboard.append(row)
+        
+        # Кнопки навигации только если есть старые задания
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data="student_homework_prev"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if end < total_old:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data="student_homework_next"))
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+    
     # Актуальное задание всегда внизу
     if current_homework:
         short_title = current_homework.title[:40] + ('…' if len(current_homework.title) > 40 else '')
         keyboard.append([InlineKeyboardButton(f"🆕 {short_title}", callback_data=f"student_hw_{current_homework.id}")])
+    
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    
     # Формируем заголовок
     header = f"📚 <b>Ваши домашние задания</b>\n"
     if not student.show_old_homework and len(db.get_homeworks_for_student_with_filter(student.id)) > 1:
         header += "ℹ️ Показано только актуальное задание\n"
     header += "─────────────\n"
+    
     await update.callback_query.edit_message_text(
         text=header,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
+    )
+
+async def show_student_roadmap(update, context, student, page=0):
+    db = context.bot_data['db']
+    exam_type = student.exam_type
+    exam_label = 'ЕГЭ' if exam_type.value == 'ЕГЭ' else 'ОГЭ'
+    
+    # --- Роадмап для ЕГЭ ---
+    if exam_type.value == 'ЕГЭ':
+        roadmap = [
+            (1, '🖊️'), (4, '🖊️'), (11, '🖊️💻'), (7, '🖊️💻'), (10, '📝'), (3, '📊'), (18, '📊'), (22, '📊'),
+            (9, '📊💻'), ('Python', '🐍'), (2, '🐍'), (15, '🐍'), (6, '🐍'), (14, '🐍'), (5, '🐍'), (12, '🐍'),
+            (8, '🐍'), (13, '🐍'), (16, '🐍'), (23, '🐍'), ('19-21', '🖊️💻'), (25, '🐍'), (27, '🐍'), (24, '🐍'), (26, '📊💻')
+        ]
+        real_statuses = db.get_homework_status_for_student(student.id, exam_type)
+        tasks = []
+        primary_score = 0
+        for num, emoji in roadmap:
+            status = real_statuses.get(num)
+            if status == 'completed' or status == 'Пройдено':
+                status = 'Пройдено'
+            elif status == 'in_progress' or status == 'В процессе':
+                status = 'В процессе'
+            else:
+                status = 'Не пройдено'
+            note_line = ''
+            if status in ('Пройдено', 'В процессе'):
+                notes = db.get_notes_by_exam(exam_type)
+                note = next((n for n in notes if n.get_task_number() == num), None)
+                if note:
+                    note_line = f"└─ <a href='{note.link}'>Конспект</a>"
+            if num in (26, 27):
+                max_score = 2
+            elif isinstance(num, int) and 1 <= num <= 25:
+                max_score = 1
+            else:
+                max_score = 0
+            if num == 'Python' or num == '19-21':
+                title = f"{emoji} {num}"
+            else:
+                title = f"{emoji} Задание {num}"
+            if status == 'Пройдено':
+                primary_score += max_score
+                status_emoji = '✅'
+            elif status == 'В процессе':
+                status_emoji = '🔄'
+            else:
+                status_emoji = '❌'
+            status_text = f'{status} {status_emoji}'
+            task_block = f"{title}\n"
+            if note_line:
+                task_block += note_line + "\n"
+            task_block += f"└─ Статус: {status_text}"
+            tasks.append(task_block)
+        
+        primary_to_test = {
+            1: 7, 2: 14, 3: 20, 4: 27, 5: 34, 6: 40, 7: 43, 8: 46, 9: 48, 10: 51, 11: 54, 12: 56, 13: 59, 14: 62, 15: 64, 16: 67, 17: 70, 18: 72, 19: 75, 20: 78, 21: 80, 22: 83, 23: 85, 24: 88, 25: 90, 26: 93, 27: 95, 28: 98, 29: 100
+        }
+        test_score = primary_to_test.get(primary_score, 0)
+        
+        # Пагинация
+        per_page = 5
+        total_pages = (len(tasks) - 1) // per_page + 1
+        start = page * per_page
+        end = start + per_page
+        page_tasks = tasks[start:end]
+        tasks_text = "\n\n".join(page_tasks)
+        
+        # Кнопки навигации
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"roadmap_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"roadmap_page_{page+1}"))
+        
+        progress_text = (
+            f"<b>Роадмап подготовки:</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"<b>🏅 Первичный балл: {primary_score}</b>\n"
+            f"<b>🎯 Тестовый балл: {test_score}</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{tasks_text}"
+        )
+        
+    # --- Роадмап для ОГЭ ---
+    elif exam_type.value == 'ОГЭ':
+        roadmap = [
+            (1, '🖊️'), (2, '🖊️'), (4, '🖊️'), (9, '🖊️'), (7, '🖊️'), (8, '🖊️'), (10, '🖊️'), (5, '🖊️'), (3, '🖊️'), (6, '🖊️'),
+            (11, '📁'), (12, '📁'), ('13.1', '🗂️'), ('13.2', '🗂️'), (14, '🗂️'), (15, '🐍'), ('Python', '🐍'), (16, '🐍')
+        ]
+        real_statuses = db.get_homework_status_for_student(student.id, exam_type)
+        tasks = []
+        score = 0
+        passed_13 = False
+        for num, emoji in roadmap:
+            status = real_statuses.get(num)
+            if status == 'completed' or status == 'Пройдено':
+                status = 'Пройдено'
+            elif status == 'in_progress' or status == 'В процессе':
+                status = 'В процессе'
+            else:
+                status = 'Не пройдено'
+            note_line = ''
+            if status in ('Пройдено', 'В процессе'):
+                notes = db.get_notes_by_exam(exam_type)
+                note = next((n for n in notes if n.get_task_number() == num), None)
+                if note:
+                    note_line = f"└─ <a href='{note.link}'>Конспект</a>"
+            if num == 'Python':
+                title = f"{emoji} Python"
+                if status == 'Пройдено':
+                    score += 2
+            elif num in ('13.1', '13.2'):
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    passed_13 = True
+            elif num == 14:
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 3
+            elif num in (15, 16):
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 2
+            else:
+                title = f"{emoji} Задание {num}"
+                if status == 'Пройдено':
+                    score += 1
+            if status == 'Пройдено':
+                status_emoji = '✅'
+            elif status == 'В процессе':
+                status_emoji = '🔄'
+            else:
+                status_emoji = '❌'
+            status_text = f'{status} {status_emoji}'
+            task_block = f"{title}\n"
+            if note_line:
+                task_block += note_line + "\n"
+            task_block += f"└─ Статус: {status_text}"
+            tasks.append(task_block)
+        
+        if passed_13:
+            score += 2
+        if score <= 4:
+            grade = '2'
+        elif score <= 10:
+            grade = '3'
+        elif score <= 16:
+            grade = '4'
+        else:
+            grade = '5'
+        
+        # Пагинация
+        per_page = 5
+        total_pages = (len(tasks) - 1) // per_page + 1
+        start = page * per_page
+        end = start + per_page
+        page_tasks = tasks[start:end]
+        tasks_text = "\n\n".join(page_tasks)
+        
+        # Кнопки навигации
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"roadmap_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"roadmap_page_{page+1}"))
+        
+        progress_text = (
+            f"<b>Ваш роадмап подготовки:</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"<b>🏅 Текущий балл: {score}</b>\n"
+            f"<b>📊 Оценка: {grade}</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{tasks_text}"
+        )
+    else:
+        progress_text = "Роадмап доступен только для ОГЭ и ЕГЭ."
+        nav_buttons = []
+    
+    # Формируем клавиатуру
+    keyboard = []
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    
+    await update.callback_query.edit_message_text(
+        text=progress_text,
+        parse_mode='HTML',
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     ) 
