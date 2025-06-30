@@ -56,4 +56,9 @@ temp/
 homework_files/
 
 # Notes files
-notes_files/ 
+notes_files/
+
+# Checkpoint folders
+checkpoint_*/
+
+# iCal Calendar (URL хранится в коде, не требует файлов) 

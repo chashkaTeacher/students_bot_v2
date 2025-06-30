@@ -54,6 +54,16 @@ def convert_status_from_db(status):
         return status
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
+    # Получаем количество непрочитанных уведомлений для админа
+    db = context.bot_data['db']
+    user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.callback_query.from_user.id
+    admin = db.get_admin_by_telegram_id(user_id)
+    unread_count = 0
+    if admin:
+        unread_count = len(db.get_admin_notifications(admin.id, only_unread=True))
+    
+    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    
     keyboard = [
         [
             InlineKeyboardButton("🎯 Выдать домашнее задание", callback_data="admin_give_homework")
@@ -67,7 +77,8 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) 
             InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")
         ],
         [
-            InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")
+            InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
+            InlineKeyboardButton(notif_text, callback_data="admin_notifications")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -361,6 +372,32 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         duration = int(query.data.split("_")[-1])
         return await handle_schedule_edit_duration(update, context, duration)
     
+    # Обработчики настроек переносов
+    elif query.data == "reschedule_settings":
+        await show_reschedule_settings(update, context)
+        return ConversationHandler.END
+    elif query.data == "reschedule_settings_hours":
+        await show_reschedule_hours_settings(update, context)
+        return ConversationHandler.END
+    elif query.data.startswith("reschedule_start_"):
+        await show_reschedule_end_hours_settings(update, context)
+        return ConversationHandler.END
+    elif query.data.startswith("reschedule_end_"):
+        await save_reschedule_hours(update, context)
+        return ConversationHandler.END
+    elif query.data == "reschedule_settings_days":
+        await show_reschedule_days_settings(update, context)
+        return ConversationHandler.END
+    elif query.data.startswith("reschedule_day_"):
+        await toggle_reschedule_day(update, context)
+        return ConversationHandler.END
+    elif query.data == "reschedule_settings_interval":
+        await show_reschedule_interval_settings(update, context)
+        return ConversationHandler.END
+    elif query.data.startswith("reschedule_interval_"):
+        await save_reschedule_interval(update, context)
+        return ConversationHandler.END
+    
     if query.data.startswith("edit_name_"):
         student_id = int(query.data.split("_")[-1])
         temp_data[update.effective_user.id] = {"student_id": student_id}
@@ -409,6 +446,12 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     elif query.data == "admin_check_unassigned_notes":
         await check_unassigned_notes(update, context)
+        return ConversationHandler.END
+    elif query.data == "admin_notifications":
+        await show_admin_notifications(update, context)
+        return ConversationHandler.END
+    elif query.data in ["admin_notif_prev", "admin_notif_next", "admin_notif_clear"]:
+        await handle_admin_notification_actions(update, context)
         return ConversationHandler.END
     elif query.data == "admin_homework":
         from handlers.homework_handlers import show_homework_menu
@@ -2177,6 +2220,7 @@ async def show_schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             InlineKeyboardButton("✏️ Редактировать", callback_data="schedule_exam_edit"),
             InlineKeyboardButton("❌ Удалить занятие", callback_data="schedule_exam_delete")
         ],
+        [InlineKeyboardButton("⚙️ Настройки переносов", callback_data="reschedule_settings")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3050,3 +3094,365 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
     greeting = f"👋 Привет, {display_name}!"
     msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
     db.update_student_menu_message_id(student.id, msg.message_id)
+
+# --- Обработчики настроек переносов ---
+async def show_reschedule_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает меню настроек переносов"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    settings = db.get_reschedule_settings()
+    
+    # Форматируем доступные дни
+    days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    available_days = [int(d) for d in settings.available_days.split(',')]
+    days_text = ' '.join([days[i] for i in available_days])
+    
+    text = (
+        "⚙️ <b>Настройки переносов</b>\n\n"
+        f"🕐 Рабочие часы: {settings.work_start_time} - {settings.work_end_time}\n"
+        f"📅 Доступные дни: {days_text}\n"
+        f"⏱️ Интервал слотов: {settings.slot_interval} мин\n\n"
+        "Выберите, что хотите изменить:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🕐 Рабочие часы", callback_data="reschedule_settings_hours")],
+        [InlineKeyboardButton("📅 Доступные дни", callback_data="reschedule_settings_days")],
+        [InlineKeyboardButton("⏱️ Интервал слотов", callback_data="reschedule_settings_interval")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def show_reschedule_hours_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает настройки рабочих часов"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    settings = db.get_reschedule_settings()
+    
+    text = (
+        "🕐 <b>Настройка рабочих часов</b>\n\n"
+        f"Текущие часы: {settings.work_start_time} - {settings.work_end_time}\n\n"
+        "Выберите время начала работы:"
+    )
+    
+    # Кнопки для выбора времени начала
+    start_times = ["08:00", "09:00", "10:00", "11:00", "12:00"]
+    keyboard = []
+    for i in range(0, len(start_times), 2):
+        row = []
+        row.append(InlineKeyboardButton(start_times[i], callback_data=f"reschedule_start_{start_times[i]}"))
+        if i + 1 < len(start_times):
+            row.append(InlineKeyboardButton(start_times[i + 1], callback_data=f"reschedule_start_{start_times[i + 1]}"))
+        keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="reschedule_settings")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def show_reschedule_end_hours_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает настройки времени окончания работы"""
+    query = update.callback_query
+    await query.answer()
+    
+    start_time = query.data.split('_')[-1]
+    context.user_data['reschedule_start_time'] = start_time
+    
+    text = (
+        "🕐 <b>Настройка рабочих часов</b>\n\n"
+        f"Время начала: {start_time}\n"
+        "Выберите время окончания работы:"
+    )
+    
+    # Кнопки для выбора времени окончания
+    end_times = ["17:00", "18:00", "19:00", "20:00", "21:00", "22:00"]
+    keyboard = []
+    for i in range(0, len(end_times), 2):
+        row = []
+        row.append(InlineKeyboardButton(end_times[i], callback_data=f"reschedule_end_{end_times[i]}"))
+        if i + 1 < len(end_times):
+            row.append(InlineKeyboardButton(end_times[i + 1], callback_data=f"reschedule_end_{end_times[i + 1]}"))
+        keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="reschedule_settings_hours")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def save_reschedule_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сохраняет настройки рабочих часов"""
+    query = update.callback_query
+    await query.answer()
+    
+    start_time = context.user_data.get('reschedule_start_time')
+    end_time = query.data.split('_')[-1]
+    
+    db = context.bot_data['db']
+    success = db.update_reschedule_settings(work_start_time=start_time, work_end_time=end_time)
+    
+    if success:
+        await query.answer("✅ Рабочие часы обновлены!")
+    else:
+        await query.answer("❌ Ошибка при обновлении!")
+    
+    await show_reschedule_settings(update, context)
+
+async def show_reschedule_days_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает настройки доступных дней"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    settings = db.get_reschedule_settings()
+    available_days = [int(d) for d in settings.available_days.split(',')]
+    
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    
+    text = "📅 <b>Настройка доступных дней</b>\n\nВыберите дни, доступные для переноса:"
+    
+    keyboard = []
+    for i, day in enumerate(days):
+        status = "✅" if i in available_days else "❌"
+        keyboard.append([InlineKeyboardButton(f"{status} {day}", callback_data=f"reschedule_day_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="reschedule_settings")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def toggle_reschedule_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Переключает доступность дня"""
+    query = update.callback_query
+    await query.answer()
+    
+    day = int(query.data.split('_')[-1])
+    db = context.bot_data['db']
+    settings = db.get_reschedule_settings()
+    available_days = [int(d) for d in settings.available_days.split(',')]
+    
+    if day in available_days:
+        available_days.remove(day)
+    else:
+        available_days.append(day)
+    
+    available_days.sort()
+    new_days_str = ','.join(map(str, available_days))
+    
+    success = db.update_reschedule_settings(available_days=new_days_str)
+    
+    if success:
+        await show_reschedule_days_settings(update, context)
+    else:
+        await query.answer("❌ Ошибка при обновлении!")
+
+async def show_reschedule_interval_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает настройки интервала слотов"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    settings = db.get_reschedule_settings()
+    
+    text = (
+        "⏱️ <b>Настройка интервала слотов</b>\n\n"
+        f"Текущее значение: {settings.slot_interval} минут\n\n"
+        "Выберите новый интервал:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("15 минут", callback_data="reschedule_interval_15")],
+        [InlineKeyboardButton("30 минут", callback_data="reschedule_interval_30")],
+        [InlineKeyboardButton("45 минут", callback_data="reschedule_interval_45")],
+        [InlineKeyboardButton("60 минут", callback_data="reschedule_interval_60")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="reschedule_settings")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def save_reschedule_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сохраняет настройки интервала слотов"""
+    query = update.callback_query
+    await query.answer()
+    
+    interval = int(query.data.split('_')[-1])
+    db = context.bot_data['db']
+    success = db.update_reschedule_settings(slot_interval=interval)
+    
+    if success:
+        await query.answer("✅ Интервал слотов обновлен!")
+    else:
+        await query.answer("❌ Ошибка при обновлении!")
+    
+    await show_reschedule_settings(update, context)
+
+async def send_admin_menu_by_chat_id(context, chat_id):
+    db = context.bot_data['db']
+    admin = db.get_admin_by_telegram_id(chat_id) if hasattr(db, 'get_admin_by_telegram_id') else None
+    if not admin:
+        return
+    # Удаляем предыдущее меню, если оно есть
+    last_menu_id = db.get_admin_menu_message_id(admin.id) if hasattr(db, 'get_admin_menu_message_id') else None
+    if last_menu_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=last_menu_id)
+        except Exception:
+            pass
+
+    # Получаем количество непрочитанных уведомлений
+    unread_count = len(db.get_admin_notifications(admin.id, only_unread=True))
+    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    
+    # Формируем клавиатуру меню
+    keyboard = [
+        [InlineKeyboardButton("🎯 Выдать домашнее задание", callback_data="admin_give_homework")],
+        [InlineKeyboardButton("👥 Управление учениками", callback_data="admin_students"),
+         InlineKeyboardButton("📚 Управление заданиями", callback_data="admin_homework")],
+        [InlineKeyboardButton("📝 Управление конспектами", callback_data="admin_notes"),
+         InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
+         InlineKeyboardButton(notif_text, callback_data="admin_notifications")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="🔑 Панель управления администратора\nВыберите раздел:",
+        reply_markup=reply_markup
+    )
+    if hasattr(db, 'update_admin_menu_message_id'):
+        db.update_admin_menu_message_id(admin.id, msg.message_id)
+
+async def show_admin_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает уведомления администратора"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    user_id = query.from_user.id
+    admin = db.get_admin_by_telegram_id(user_id)
+    
+    if not admin:
+        await query.edit_message_text(
+            text="❌ Администратор не найден.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]])
+        )
+        return
+    
+    # Сброс страницы при открытии уведомлений
+    context.user_data['admin_notif_page'] = 0
+    notifications = db.get_admin_notifications(admin.id)
+    
+    if not notifications:
+        await query.edit_message_text(
+            text="🔔 Нет новых уведомлений.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]])
+        )
+        return
+    
+    # Пагинация: показываем только 5 последних уведомлений
+    page = int(context.user_data.get('admin_notif_page', 0))
+    per_page = 5
+    total = len(notifications)
+    max_page = (total + per_page - 1) // per_page - 1
+    page_notifications = notifications[page * per_page:min(page * per_page + per_page, total)]
+    
+    notif_texts = []
+    for i, notif in enumerate(page_notifications, 1):
+        status = "🆕 " if not notif.is_read else "📋 "
+        dt = notif.created_at.strftime('%d.%m.%Y %H:%M')
+        
+        # Тип уведомления на кириллице с эмодзи
+        if notif.type == 'reschedule':
+            notif_type = "🔄 Запрос на перенос"
+        elif notif.type == 'homework':
+            notif_type = "📚 Домашнее задание"
+        elif notif.type == 'schedule':
+            notif_type = "📅 Расписание"
+        else:
+            notif_type = "📢 Уведомление"
+        
+        # Форматируем текст уведомления
+        text = f"<b>{status}{notif_type}</b>\n"
+        text += f"📅 <i>{dt}</i>\n\n"
+        text += f"📝 {notif.text}"
+        
+        if notif.link:
+            text += f"\n🔗 <a href='{notif.link}'>Открыть ссылку</a>"
+        
+
+        
+        # Добавляем разделитель между уведомлениями (кроме последнего)
+        if i < len(page_notifications):
+            text += "\n─────────────"
+        
+        notif_texts.append(text)
+    
+    text = "\n\n".join(notif_texts)
+    db.mark_admin_notifications_read(admin.id)
+    buttons = []
+    
+    # Показываем навигацию только если есть больше одной страницы
+    if max_page > 0:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data="admin_notif_prev"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data="admin_notif_next"))
+        buttons.append(nav_row)
+    
+    buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="admin_notif_clear")])
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
+    
+    # Красивый заголовок с информацией о страницах
+    header = f"🔔 <b>Уведомления администратора</b>\n"
+    header += f"📊 Всего: {total}\n"
+    header += "─────────────\n\n"
+    
+    await query.edit_message_text(
+        text=header + text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
+
+async def handle_admin_notification_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает действия с уведомлениями администратора"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    user_id = query.from_user.id
+    admin = db.get_admin_by_telegram_id(user_id)
+    
+    if not admin:
+        return
+    
+    if query.data == "admin_notif_prev":
+        context.user_data['admin_notif_page'] = max(0, context.user_data.get('admin_notif_page', 0) - 1)
+        await show_admin_notifications(update, context)
+    elif query.data == "admin_notif_next":
+        context.user_data['admin_notif_page'] = context.user_data.get('admin_notif_page', 0) + 1
+        await show_admin_notifications(update, context)
+    elif query.data == "admin_notif_clear":
+        # Удаляем все уведомления администратора
+        db.clear_admin_notifications(admin.id)
+        # Удаляем все push-уведомления из чата
+        push_msgs = db.get_admin_push_messages(admin.id)
+        for push in push_msgs:
+            try:
+                await context.bot.delete_message(chat_id=user_id, message_id=push.message_id)
+            except Exception:
+                pass  # Игнорируем ошибки (например, если сообщение уже удалено)
+        db.clear_admin_push_messages(admin.id)
+        context.user_data['admin_notif_page'] = 0
+        await query.edit_message_text(
+            text="🔔 Все уведомления удалены!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]])
+        )

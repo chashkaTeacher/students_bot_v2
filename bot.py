@@ -37,12 +37,19 @@ from handlers.admin_handlers import (
     handle_schedule_time, handle_schedule_duration,
     SCHEDULE_CHOOSE_DAY, SCHEDULE_ENTER_TIME, SCHEDULE_ENTER_DURATION,
     handle_schedule_edit_time,
-    SCHEDULE_EDIT_CHOOSE_PARAM, SCHEDULE_EDIT_DAY, SCHEDULE_EDIT_TIME, SCHEDULE_EDIT_DURATION
+    SCHEDULE_EDIT_CHOOSE_PARAM, SCHEDULE_EDIT_DAY, SCHEDULE_EDIT_TIME, SCHEDULE_EDIT_DURATION,
+    show_reschedule_settings, show_reschedule_hours_settings, show_reschedule_end_hours_settings,
+    save_reschedule_hours, show_reschedule_days_settings, toggle_reschedule_day,
+    show_reschedule_interval_settings, save_reschedule_interval
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
     handle_display_name_change, ENTER_DISPLAY_NAME, show_student_menu,
-    handle_student_selection, handle_student_edit_action
+    handle_student_selection, handle_student_edit_action, handle_student_link_edit,
+    send_student_menu_by_chat_id, show_student_notes_menu, show_student_homework_menu,
+    show_student_roadmap, student_reschedule_menu, student_reschedule_start, student_reschedule_choose_week,
+    student_reschedule_choose_day, student_reschedule_choose_time, student_reschedule_confirm,
+    RESCHEDULE_CHOOSE_LESSON, RESCHEDULE_CHOOSE_WEEK, RESCHEDULE_CHOOSE_DAY, RESCHEDULE_CHOOSE_TIME, RESCHEDULE_CONFIRM
 )
 from handlers.homework_handlers import (
     show_homework_menu,
@@ -508,6 +515,28 @@ def main():
         persistent=False
     )
 
+    # ConversationHandler для переноса занятия студентом
+    reschedule_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(student_reschedule_menu, pattern="^student_reschedule$")],
+        states={
+            RESCHEDULE_CHOOSE_LESSON: [CallbackQueryHandler(student_reschedule_start, pattern="^reschedule_lesson_\\d+$")],
+            RESCHEDULE_CHOOSE_WEEK: [CallbackQueryHandler(student_reschedule_choose_week, pattern="^reschedule_week_\\d+$")],
+            RESCHEDULE_CHOOSE_DAY: [CallbackQueryHandler(student_reschedule_choose_day, pattern="^reschedule_day_\\d+$")],
+            RESCHEDULE_CHOOSE_TIME: [
+                CallbackQueryHandler(student_reschedule_choose_time, pattern="^reschedule_time_\\d{2}:\\d{2}$"),
+                CallbackQueryHandler(student_reschedule_choose_time, pattern="^reschedule_time_(prev|next)$"),
+                CallbackQueryHandler(student_reschedule_menu, pattern="^student_reschedule$")
+            ],
+            RESCHEDULE_CONFIRM: [
+                CallbackQueryHandler(student_reschedule_confirm, pattern="^reschedule_confirm$"),
+                CallbackQueryHandler(student_reschedule_menu, pattern="^student_reschedule$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(student_menu, pattern="^student_back$")],
+        name="reschedule_handler",
+        persistent=False
+    )
+
     # Регистрируем обработчики
     application.add_handler(main_handler)
     application.add_handler(add_student_handler)
@@ -519,12 +548,24 @@ def main():
     application.add_handler(give_variant_handler)
     application.add_handler(statistics_handler)
     application.add_handler(schedule_handler)
+    application.add_handler(reschedule_handler)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("admin", admin_menu))
-    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_|schedule_exam_).*$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_|schedule_exam_|reschedule_settings).*$"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^admin_notif_"))  # Обработчик админских уведомлений
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^roadmap_page_"))  # Обработчик навигации роадмапа
-    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_schedule$"))  # Обработчик расписания (выше общего)
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_settings$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_settings_hours$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_settings_days$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_settings_interval$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_day_"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_interval_"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_start_"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_end_"))
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^reschedule_"))  # Обработчик переноса занятий (выше общего)
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))
     
     # Запускаем бота
     application.run_polling()

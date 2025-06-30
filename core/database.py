@@ -7,6 +7,7 @@ import string
 import re
 import urllib.parse
 import pytz
+import threading
 
 Base = declarative_base()
 
@@ -78,6 +79,7 @@ class Admin(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String)
+    menu_message_id = Column(Integer, nullable=True)
 
 class Student(Base):
     __tablename__ = 'students'
@@ -169,8 +171,9 @@ class Variant(Base):
 class Notification(Base):
     __tablename__ = 'notifications'
     id = Column(Integer, primary_key=True)
-    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
-    type = Column(String, nullable=False)  # 'homework', 'variant', etc.
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=True)  # Может быть null для админских уведомлений
+    admin_id = Column(Integer, ForeignKey('admins.id'), nullable=True)  # Может быть null для студенческих уведомлений
+    type = Column(String, nullable=False)  # 'homework', 'variant', 'reschedule', etc.
     text = Column(String, nullable=False)
     link = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
@@ -180,6 +183,13 @@ class PushMessage(Base):
     __tablename__ = 'push_messages'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, nullable=False)
+    message_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+class AdminPushMessage(Base):
+    __tablename__ = 'admin_push_messages'
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, nullable=False)
     message_id = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=func.now())
 
@@ -222,7 +232,32 @@ class Schedule(Base):
         UniqueConstraint('student_id', 'day_of_week', 'time', name='unique_student_schedule'),
     )
 
+class RescheduleRequest(Base):
+    __tablename__ = 'reschedule_requests'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    schedule_id = Column(Integer, ForeignKey('schedule.id'), nullable=False)
+    original_date = Column(DateTime, nullable=False)  # Текущая дата занятия
+    original_time = Column(String, nullable=False)    # Текущее время занятия
+    requested_date = Column(DateTime, nullable=False) # Желаемая дата
+    requested_time = Column(String, nullable=False)   # Желаемое время
+    status = Column(String, default='pending')        # pending, processed
+    created_at = Column(DateTime, default=func.now())
+
+class RescheduleSettings(Base):
+    __tablename__ = 'reschedule_settings'
+    id = Column(Integer, primary_key=True)
+    work_start_time = Column(String, default="10:00")
+    work_end_time = Column(String, default="19:00")
+    available_days = Column(String, default="0,1,2,3,4,5,6")  # 0=пн, 6=вс
+    max_weeks_ahead = Column(Integer, default=2)
+    slot_interval = Column(Integer, default=15)  # интервал слотов в минутах
+
 class Database:
+    _slots_cache = {}
+    _slots_cache_lock = threading.Lock()
+    _slots_cache_ttl = 600  # 10 минут в секундах
+
     def __init__(self):
         self.engine = create_engine('sqlite:///students.db')
         Base.metadata.create_all(self.engine)
@@ -805,10 +840,29 @@ class Database:
         finally:
             session.close()
 
+    def add_admin_notification(self, admin_id: int, notif_type: str, text: str, link: str = None):
+        session = self.Session()
+        try:
+            notif = Notification(admin_id=admin_id, type=notif_type, text=text, link=link)
+            session.add(notif)
+            session.commit()
+        finally:
+            session.close()
+
     def get_notifications(self, student_id: int, only_unread: bool = False):
         session = self.Session()
         try:
             q = session.query(Notification).filter_by(student_id=student_id)
+            if only_unread:
+                q = q.filter_by(is_read=False)
+            return q.order_by(Notification.created_at.asc()).all()
+        finally:
+            session.close()
+
+    def get_admin_notifications(self, admin_id: int, only_unread: bool = False):
+        session = self.Session()
+        try:
+            q = session.query(Notification).filter_by(admin_id=admin_id)
             if only_unread:
                 q = q.filter_by(is_read=False)
             return q.order_by(Notification.created_at.asc()).all()
@@ -823,10 +877,41 @@ class Database:
         finally:
             session.close()
 
+    def mark_admin_notifications_read(self, admin_id: int):
+        session = self.Session()
+        try:
+            session.query(Notification).filter_by(admin_id=admin_id, is_read=False).update({Notification.is_read: True})
+            session.commit()
+        finally:
+            session.close()
+
     def has_unread_notifications(self, student_id: int) -> bool:
         session = self.Session()
         try:
             return session.query(Notification).filter_by(student_id=student_id, is_read=False).count() > 0
+        finally:
+            session.close()
+
+    def has_unread_admin_notifications(self, admin_id: int) -> bool:
+        session = self.Session()
+        try:
+            return session.query(Notification).filter_by(admin_id=admin_id, is_read=False).count() > 0
+        finally:
+            session.close()
+
+    def clear_notifications(self, student_id: int):
+        session = self.Session()
+        try:
+            session.query(Notification).filter_by(student_id=student_id).delete()
+            session.commit()
+        finally:
+            session.close()
+
+    def clear_admin_notifications(self, admin_id: int):
+        session = self.Session()
+        try:
+            session.query(Notification).filter_by(admin_id=admin_id).delete()
+            session.commit()
         finally:
             session.close()
 
@@ -847,14 +932,6 @@ class Database:
             if student:
                 return student.last_menu_message_id
             return None
-        finally:
-            session.close()
-
-    def clear_notifications(self, student_id: int):
-        session = self.Session()
-        try:
-            session.query(Notification).filter_by(student_id=student_id).delete()
-            session.commit()
         finally:
             session.close()
 
@@ -879,6 +956,35 @@ class Database:
         session = self.Session()
         try:
             push_messages = session.query(PushMessage).filter_by(user_id=user_id).all()
+            for msg in push_messages:
+                session.delete(msg)
+            session.commit()
+        finally:
+            session.close()
+
+    def add_admin_push_message(self, admin_id: int, message_id: int):
+        """Добавляет push-сообщение администратора"""
+        session = self.Session()
+        try:
+            push = AdminPushMessage(admin_id=admin_id, message_id=message_id)
+            session.add(push)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_admin_push_messages(self, admin_id: int):
+        """Получает push-сообщения администратора"""
+        session = self.Session()
+        try:
+            return session.query(AdminPushMessage).filter_by(admin_id=admin_id).all()
+        finally:
+            session.close()
+
+    def clear_admin_push_messages(self, admin_id: int):
+        """Очищает push-сообщения администратора"""
+        session = self.Session()
+        try:
+            push_messages = session.query(AdminPushMessage).filter_by(admin_id=admin_id).all()
             for msg in push_messages:
                 session.delete(msg)
             session.commit()
@@ -1215,4 +1321,310 @@ class Database:
     def _get_day_name(self, day_of_week: int) -> str:
         """Возвращает название дня недели"""
         days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-        return days[day_of_week] 
+        return days[day_of_week]
+
+    # Методы для работы с переносами
+    def add_reschedule_request(self, student_id: int, schedule_id: int, original_date: datetime, 
+                              original_time: str, requested_date: datetime, requested_time: str) -> bool:
+        """Добавляет запрос на перенос занятия"""
+        session = self.Session()
+        try:
+            request = RescheduleRequest(
+                student_id=student_id,
+                schedule_id=schedule_id,
+                original_date=original_date,
+                original_time=original_time,
+                requested_date=requested_date,
+                requested_time=requested_time
+            )
+            session.add(request)
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def create_reschedule_request(self, student_id: int, schedule_id: int, requested_date: datetime, 
+                                 requested_time: str, status: str = 'pending') -> dict:
+        """Создает запрос на перенос занятия и возвращает словарь с нужными полями"""
+        session = self.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            if not schedule:
+                return None
+            now = datetime.now()
+            current_day = schedule.day_of_week
+            current_date = now + timedelta(days=(current_day - now.weekday()) % 7)
+            if current_date < now:
+                current_date += timedelta(days=7)
+            request = RescheduleRequest(
+                student_id=student_id,
+                schedule_id=schedule_id,
+                original_date=current_date,
+                original_time=schedule.time,
+                requested_date=requested_date,
+                requested_time=requested_time,
+                status=status
+            )
+            session.add(request)
+            session.commit()
+            # Сохраняем нужные значения сразу
+            return {
+                'id': request.id,
+                'student_id': request.student_id,
+                'schedule_id': request.schedule_id,
+                'original_date': request.original_date,
+                'original_time': request.original_time,
+                'requested_date': request.requested_date,
+                'requested_time': request.requested_time,
+                'status': request.status,
+                'created_at': request.created_at
+            }
+        except Exception as e:
+            session.rollback()
+            print(f"Ошибка при создании запроса на перенос: {e}")
+            return None
+        finally:
+            session.close()
+
+    def get_reschedule_settings(self) -> RescheduleSettings:
+        """Получает настройки переносов"""
+        session = self.Session()
+        try:
+            settings = session.query(RescheduleSettings).first()
+            if not settings:
+                # Создаем настройки по умолчанию
+                settings = RescheduleSettings()
+                session.add(settings)
+                session.commit()
+            return settings
+        finally:
+            session.close()
+
+    def update_reschedule_settings(self, **kwargs) -> bool:
+        """Обновляет настройки переносов"""
+        session = self.Session()
+        try:
+            settings = session.query(RescheduleSettings).first()
+            if not settings:
+                settings = RescheduleSettings()
+                session.add(settings)
+            
+            for key, value in kwargs.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
+            
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_available_slots_for_day(self, date: datetime, lesson_duration: int) -> list:
+        """Получает доступные слоты для занятия заданной длительности на конкретную дату с кэшированием"""
+        session = self.Session()
+        try:
+            settings = self.get_reschedule_settings()
+            day_of_week = date.weekday()
+            available_days = [int(d) for d in settings.available_days.split(',')]
+            if day_of_week not in available_days:
+                return []
+
+            # --- Кэширование ---
+            # Ключ кэша: (student_id, date, duration)
+            # Для совместимости с текущим кодом, определим student_id через расписание (если есть)
+            student_id = None
+            try:
+                # Получаем расписание для этого дня
+                schedule = session.query(Schedule).filter_by(day_of_week=day_of_week, is_active=True).first()
+                if schedule:
+                    student_id = schedule.student_id
+            except Exception:
+                pass
+            cache_key = (student_id, date.date().isoformat(), lesson_duration)
+            now_ts = datetime.now().timestamp()
+            with self._slots_cache_lock:
+                cache_entry = self._slots_cache.get(cache_key)
+                if cache_entry:
+                    slots, ts = cache_entry
+                    if now_ts - ts < self._slots_cache_ttl:
+                        return slots
+            # --- Конец блока кэширования ---
+
+            # ... существующий код получения слотов ...
+            start_time = datetime.strptime(settings.work_start_time, "%H:%M").time()
+            end_time = datetime.strptime(settings.work_end_time, "%H:%M").time()
+            now = datetime.now()
+            if date.date() == now.date():
+                current_hour = now.hour
+                current_minute = now.minute
+                adjusted_hour = current_hour + 1
+                if adjusted_hour >= 24:
+                    return []
+                start_time = max(start_time, datetime.strptime(f"{adjusted_hour:02d}:{current_minute:02d}", "%H:%M").time())
+            try:
+                from .ical_sync import ical_sync
+                slots = ical_sync.get_available_slots(
+                    date=date,
+                    start_time=start_time.strftime("%H:%M"),
+                    end_time=end_time.strftime("%H:%M"),
+                    slot_duration=lesson_duration,
+                    slot_interval=settings.slot_interval
+                )
+                filtered_slots = []
+                for slot in slots:
+                    if self.is_slot_available(date, slot['time'], lesson_duration):
+                        filtered_slots.append(slot)
+                slots = filtered_slots
+            except ImportError:
+                slots = []
+            except Exception as e:
+                print(f"Ошибка при проверке iCal календаря: {e}")
+                slots = []
+            if not slots:
+                # Старая логика (если iCal недоступен)
+                slots = []
+                current_time = start_time
+                while current_time < end_time:
+                    slot_end = datetime.combine(date, current_time) + timedelta(minutes=lesson_duration)
+                    slot_end_time = slot_end.time()
+                    if slot_end_time <= end_time:
+                        if self.is_slot_available(date, current_time.strftime("%H:%M"), lesson_duration):
+                            slots.append({
+                                'time': current_time.strftime('%H:%M'),
+                                'end_time': slot_end_time.strftime('%H:%M'),
+                                'display': f"{current_time.strftime('%H:%M')}-{slot_end_time.strftime('%H:%M')}"
+                            })
+                    current_time = (datetime.combine(date, current_time) + timedelta(minutes=settings.slot_interval)).time()
+            # --- Сохраняем в кэш ---
+            with self._slots_cache_lock:
+                self._slots_cache[cache_key] = (slots, now_ts)
+            return slots
+        finally:
+            session.close()
+
+    def is_slot_available(self, date: datetime, time: str, duration: int) -> bool:
+        """Проверяет, доступен ли слот для занятия заданной длительности"""
+        session = self.Session()
+        try:
+            day_of_week = date.weekday()
+            
+            # Получаем все занятия в этот день недели
+            schedules = session.query(Schedule).filter_by(
+                day_of_week=day_of_week,
+                is_active=True
+            ).all()
+            
+            # Проверяем пересечения с существующими занятиями
+            requested_start = datetime.strptime(time, "%H:%M")
+            requested_end = requested_start + timedelta(minutes=duration)
+            
+            for schedule in schedules:
+                schedule_start = datetime.strptime(schedule.time, "%H:%M")
+                schedule_end = schedule_start + timedelta(minutes=schedule.duration)
+                
+                # Проверяем пересечение
+                if (requested_start < schedule_end and requested_end > schedule_start):
+                    return False  # Есть пересечение
+            
+            # Проверяем iCal календарь (если доступен)
+            try:
+                from .ical_sync import ical_sync
+                if ical_sync.is_time_busy(date, time, duration):
+                    return False  # Время занято в календаре
+            except ImportError:
+                # Если модуль iCal недоступен, пропускаем проверку
+                pass
+            except Exception as e:
+                # Если произошла ошибка при проверке календаря, логируем и продолжаем
+                print(f"Ошибка при проверке iCal календаря: {e}")
+            
+            return True  # Нет пересечений
+        finally:
+            session.close()
+
+    def get_available_days_for_week(self, week_start: datetime, lesson_duration: int) -> list:
+        """Получает доступные дни для недели с учетом длительности занятия"""
+        settings = self.get_reschedule_settings()
+        available_days = [int(d) for d in settings.available_days.split(',')]
+        now = datetime.now()
+        days = []
+        for i in range(7):
+            if i in available_days:
+                date = week_start + timedelta(days=i)
+                # Проверяем, что дата не в прошлом
+                if date.date() > now.date():
+                    # Будущие дни недели — всегда доступны
+                    slots = self.get_available_slots_for_day(date, lesson_duration)
+                    if slots:
+                        days.append({
+                            'date': date,
+                            'day_name': self._get_day_name(i),
+                            'slots_count': len(slots)
+                        })
+                elif date.date() == now.date():
+                    # Сегодня — только если есть хотя бы один слот с временем позже текущего
+                    slots = self.get_available_slots_for_day(date, lesson_duration)
+                    future_slots = [slot for slot in slots if datetime.strptime(slot['time'], "%H:%M").time() > now.time()]
+                    if future_slots:
+                        days.append({
+                            'date': date,
+                            'day_name': self._get_day_name(i),
+                            'slots_count': len(future_slots)
+                        })
+        return days
+
+    def get_schedule_by_id(self, schedule_id: int) -> Schedule:
+        """Получает занятие по ID"""
+        session = self.Session()
+        try:
+            return session.query(Schedule).filter_by(id=schedule_id).first()
+        finally:
+            session.close()
+
+    def get_admin_telegram_id(self) -> int:
+        """Получает telegram_id администратора для отправки уведомлений"""
+        session = self.Session()
+        try:
+            admin = session.query(Admin).first()
+            return admin.telegram_id if admin else None
+        finally:
+            session.close()
+
+    def get_admin_ids(self) -> list:
+        """Получает список всех telegram_id администраторов"""
+        session = self.Session()
+        try:
+            admins = session.query(Admin).all()
+            return [admin.telegram_id for admin in admins]
+        finally:
+            session.close()
+
+    def get_admin_by_telegram_id(self, telegram_id: int):
+        session = self.Session()
+        try:
+            return session.query(Admin).filter_by(telegram_id=telegram_id).first()
+        finally:
+            session.close()
+
+    def get_admin_menu_message_id(self, admin_id: int):
+        session = self.Session()
+        try:
+            admin = session.query(Admin).filter_by(id=admin_id).first()
+            return admin.menu_message_id if admin else None
+        finally:
+            session.close()
+
+    def update_admin_menu_message_id(self, admin_id: int, message_id: int):
+        session = self.Session()
+        try:
+            admin = session.query(Admin).filter_by(id=admin_id).first()
+            if admin:
+                admin.menu_message_id = message_id
+                session.commit()
+        finally:
+            session.close() 

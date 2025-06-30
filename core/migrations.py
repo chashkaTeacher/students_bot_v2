@@ -1,6 +1,8 @@
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import declarative_base
-from core.database import Database
+from core.database import Base
+import sqlite3
+import os
 
 Base = declarative_base()
 
@@ -299,8 +301,7 @@ def migrate_database():
 
 def run_migrations():
     """Запускает все миграции базы данных"""
-    db = Database()
-    engine = db.engine
+    engine = create_engine('sqlite:///students.db')
     
     # Миграция 1: Добавление поля show_old_homework в таблицу students
     try:
@@ -310,11 +311,8 @@ def run_migrations():
             if 'show_old_homework' not in columns:
                 conn.execute(text("ALTER TABLE students ADD COLUMN show_old_homework BOOLEAN DEFAULT FALSE"))
                 conn.commit()
-                print("✅ Миграция 1 выполнена: добавлено поле show_old_homework")
-            else:
-                print("ℹ️ Миграция 1 уже выполнена: поле show_old_homework уже существует")
     except Exception as e:
-        print(f"❌ Ошибка при выполнении миграции 1: {e}")
+        pass
 
     # Миграция 2: Создание таблицы variants
     try:
@@ -330,11 +328,8 @@ def run_migrations():
                     )
                 '''))
                 conn.commit()
-                print("✅ Миграция 2 выполнена: создана таблица variants")
-            else:
-                print("ℹ️ Миграция 2 уже выполнена: таблица variants уже существует")
     except Exception as e:
-        print(f"❌ Ошибка при выполнении миграции 2: {e}")
+        pass
 
     # Миграция 3: Создание таблицы notifications
     try:
@@ -354,11 +349,8 @@ def run_migrations():
                     )
                 '''))
                 conn.commit()
-                print("✅ Миграция 3 выполнена: создана таблица notifications")
-            else:
-                print("ℹ️ Миграция 3 уже выполнена: таблица notifications уже существует")
     except Exception as e:
-        print(f"❌ Ошибка при выполнении миграции 3: {e}")
+        pass
 
     # Миграция 4: Создание таблицы push_messages
     try:
@@ -374,11 +366,8 @@ def run_migrations():
                     )
                 '''))
                 conn.commit()
-                print("✅ Миграция 4 выполнена: создана таблица push_messages")
-            else:
-                print("ℹ️ Миграция 4 уже выполнена: таблица push_messages уже существует")
     except Exception as e:
-        print(f"❌ Ошибка при выполнении миграции 4: {e}")
+        pass
 
     # Миграция 5: Создание таблицы student_notes
     try:
@@ -397,11 +386,124 @@ def run_migrations():
                     )
                 '''))
                 conn.commit()
-                print("✅ Миграция 5 выполнена: создана таблица student_notes")
-            else:
-                print("ℹ️ Миграция 5 уже выполнена: таблица student_notes уже существует")
     except Exception as e:
-        print(f"❌ Ошибка при выполнении миграции 5: {e}")
+        pass
+
+    # Миграция 6: Добавление таблиц для переносов
+    try:
+        with engine.connect() as conn:
+            # Проверяем, существует ли таблица reschedule_requests
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='reschedule_requests'"))
+            if not result.fetchone():
+                conn.execute(text("""
+                    CREATE TABLE reschedule_requests (
+                        id INTEGER PRIMARY KEY,
+                        student_id INTEGER NOT NULL,
+                        schedule_id INTEGER NOT NULL,
+                        original_date DATETIME NOT NULL,
+                        original_time VARCHAR NOT NULL,
+                        requested_date DATETIME NOT NULL,
+                        requested_time VARCHAR NOT NULL,
+                        status VARCHAR DEFAULT 'pending',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (student_id) REFERENCES students (id),
+                        FOREIGN KEY (schedule_id) REFERENCES schedule (id)
+                    )
+                """))
+                
+            # Проверяем, существует ли таблица reschedule_settings
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='reschedule_settings'"))
+            if not result.fetchone():
+                conn.execute(text("""
+                    CREATE TABLE reschedule_settings (
+                        id INTEGER PRIMARY KEY,
+                        work_start_time VARCHAR DEFAULT '10:00',
+                        work_end_time VARCHAR DEFAULT '19:00',
+                        available_days VARCHAR DEFAULT '0,1,2,3,4,5,6',
+                        max_weeks_ahead INTEGER DEFAULT 2,
+                        slot_interval INTEGER DEFAULT 15
+                    )
+                """))
+                
+                # Добавляем настройки по умолчанию
+                conn.execute(text("""
+                    INSERT INTO reschedule_settings (work_start_time, work_end_time, available_days, max_weeks_ahead, slot_interval)
+                    VALUES ('10:00', '19:00', '0,1,2,3,4,5,6', 2, 15)
+                """))
+                
+            conn.commit()
+            
+    except Exception as e:
+        pass
+
+def run_all_migrations():
+    db_path = 'students.db'
+    if not os.path.exists(db_path):
+        print('База данных не найдена!')
+        return
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # 1. Добавление поля menu_message_id в admins
+    cursor.execute("PRAGMA table_info(admins);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'menu_message_id' not in columns:
+        cursor.execute("ALTER TABLE admins ADD COLUMN menu_message_id INTEGER;")
+
+    # 2. Добавление поля admin_id в notifications
+    cursor.execute("PRAGMA table_info(notifications);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'admin_id' not in columns:
+        cursor.execute("ALTER TABLE notifications ADD COLUMN admin_id INTEGER;")
+
+    # 3. Создание таблицы admin_push_messages
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_push_messages'")
+    if not cursor.fetchone():
+        cursor.execute('''
+            CREATE TABLE admin_push_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+    # 4. Исправление ограничений в notifications (если нужно)
+    # Проверяем, есть ли нужные столбцы и ограничения
+    cursor.execute("PRAGMA table_info(notifications);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'admin_id' in columns and 'student_id' in columns:
+        # Проверим, есть ли нужные ограничения (FOREIGN KEY)
+        cursor.execute("PRAGMA foreign_key_list(notifications);")
+        fks = cursor.fetchall()
+        fk_students = any('students' in fk for fk in fks)
+        fk_admins = any('admins' in fk for fk in fks)
+        if not (fk_students and fk_admins):
+            # Делаем пересоздание таблицы
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS notifications_new (
+                    id INTEGER PRIMARY KEY,
+                    student_id INTEGER,
+                    admin_id INTEGER,
+                    type VARCHAR(20) NOT NULL,
+                    text TEXT NOT NULL,
+                    link TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY(student_id) REFERENCES students(id),
+                    FOREIGN KEY(admin_id) REFERENCES admins(id)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO notifications_new (id, student_id, admin_id, type, text, link, created_at, is_read)
+                SELECT id, student_id, admin_id, type, text, link, created_at, is_read
+                FROM notifications
+            """)
+            cursor.execute("DROP TABLE notifications")
+            cursor.execute("ALTER TABLE notifications_new RENAME TO notifications")
+
+    conn.commit()
+    conn.close()
 
 if __name__ == "__main__":
-    run_migrations() 
+    run_all_migrations() 

@@ -5,6 +5,8 @@ from core.database import Database, format_moscow_time
 import os
 import datetime
 import pytz
+from datetime import timedelta
+from telegram.error import BadRequest
 
 # Состояния для ConversationHandler
 ENTER_PASSWORD = 0
@@ -16,6 +18,8 @@ user_settings = {}
 temp_data = {}
 EDIT_NAME = 1000
 EDIT_LINK = 1001
+
+RESCHEDULE_CHOOSE_LESSON, RESCHEDULE_CHOOSE_WEEK, RESCHEDULE_CHOOSE_DAY, RESCHEDULE_CHOOSE_TIME, RESCHEDULE_CONFIRM = range(5)
 
 async def get_user_settings(user_id: int) -> dict:
     """Получает настройки пользователя или возвращает настройки по умолчанию"""
@@ -67,12 +71,17 @@ async def student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     greeting = f"👋 Привет, {display_name}!"
     
     if update.callback_query:
-        msg = await update.callback_query.edit_message_text(
-            text=greeting,
-            reply_markup=reply_markup
-        )
-        # Сохраняем message_id в базе
-        db.update_student_menu_message_id(student.id, msg.message_id)
+        try:
+            msg = await update.callback_query.edit_message_text(
+                text=greeting,
+                reply_markup=reply_markup
+            )
+            db.update_student_menu_message_id(student.id, msg.message_id)
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass  # Игнорируем ошибку
+            else:
+                raise
     else:
         msg = await update.message.reply_text(
             text=greeting,
@@ -255,44 +264,35 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer("Это последняя страница")
         return
     elif query.data == "student_schedule":
-        # Получаем расписание студента
-        schedules = db.get_student_schedule(student.id)
-        next_lesson = db.get_next_lesson(student.id)
-        
-        if not schedules:
-            await query.edit_message_text(
-                text="📅 <b>Ваше расписание</b>\n\n❌ Расписание не настроено.\n\nОбратитесь к администратору для настройки расписания.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔙 Назад", callback_data="student_back")
-                ]]),
-                parse_mode=ParseMode.HTML
-            )
-            return
-        
-        # Формируем текст расписания
-        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-        schedule_text = "📅 <b>Ваше расписание</b>\n\n"
-        
-        for schedule in schedules:
-            day_name = days[schedule.day_of_week]
-            duration_text = f" ({schedule.duration} мин)" if schedule.duration != 60 else ""
-            schedule_text += f"📅 <b>{day_name}</b> в {schedule.time}{duration_text}\n"
-        
-        # Добавляем информацию о следующем занятии
-        if next_lesson:
-            next_date = format_moscow_time(next_lesson['date'], '%d.%m.%Y')
-            schedule_text += f"\n🎯 <b>Следующее занятие:</b>\n"
-            schedule_text += f"📅 {next_lesson['day_name']}, {next_date}\n"
-            schedule_text += f"⏰ Время: {next_lesson['time']}\n"
-            schedule_text += f"⏱️ Длительность: {next_lesson['duration']} минут"
-        
-        await query.edit_message_text(
-            text=schedule_text,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="student_back")
-            ]]),
-            parse_mode=ParseMode.HTML
-        )
+        await show_student_schedule_menu(update, context, student)
+    elif query.data == "student_reschedule":
+        # Запускаем процесс переноса занятия
+        await student_reschedule_menu(update, context)
+        return RESCHEDULE_CHOOSE_LESSON
+    elif query.data.startswith("reschedule_lesson_"):
+        # Обработка выбора занятия для переноса
+        await student_reschedule_start(update, context)
+        return RESCHEDULE_CHOOSE_WEEK
+    elif query.data.startswith("reschedule_week_"):
+        # Обработка выбора недели
+        await student_reschedule_choose_week(update, context)
+        return RESCHEDULE_CHOOSE_DAY
+    elif query.data.startswith("reschedule_day_"):
+        # Обработка выбора дня
+        await student_reschedule_choose_day(update, context)
+        return RESCHEDULE_CHOOSE_TIME
+    elif query.data.startswith("reschedule_time_"):
+        # Обработка выбора времени
+        await student_reschedule_choose_time(update, context)
+        return RESCHEDULE_CHOOSE_TIME
+    elif query.data == "reschedule_confirm":
+        # Обработка подтверждения
+        await student_reschedule_confirm(update, context)
+        return ConversationHandler.END
+    elif query.data == "student_menu":
+        # Возврат в главное меню студента
+        await student_menu(update, context)
+        return
     elif query.data == "student_join_lesson":
         if student and student.lesson_link:
             # Получаем информацию о следующем занятии
@@ -1274,3 +1274,456 @@ async def show_student_roadmap(update, context, student, page=0):
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup(keyboard)
     ) 
+
+# --- Новый обработчик старта переноса ---
+async def student_reschedule_start(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    # Сохраняем ID занятия
+    context.user_data['reschedule_schedule_id'] = int(query.data.split('_')[-1])
+    
+    # Показываем выбор недели
+    buttons = [
+        [InlineKeyboardButton("Текущая неделя", callback_data="reschedule_week_0")],
+        [InlineKeyboardButton("Следующая неделя", callback_data="reschedule_week_1")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]
+    ]
+    
+    await query.edit_message_text(
+        text="На какую неделю перенести занятие?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RESCHEDULE_CHOOSE_WEEK
+
+async def student_reschedule_choose_week(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем наличие schedule_id
+    if 'reschedule_schedule_id' not in context.user_data:
+        await query.edit_message_text(
+            text="❌ Ошибка: не выбрано занятие для переноса. Попробуйте снова.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    week_offset = int(query.data.split('_')[-1])
+    context.user_data['reschedule_week_offset'] = week_offset
+    
+    # Получаем доступные дни для выбранной недели
+    db = context.bot_data['db']
+    schedule_id = context.user_data['reschedule_schedule_id']
+    schedule = db.get_schedule_by_id(schedule_id)
+    lesson_duration = schedule.duration
+    
+    # Определяем начало недели
+    today = datetime.datetime.now().date()
+    start_of_week = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+    
+    # Получаем доступные дни недели
+    days = db.get_available_days_for_week(datetime.datetime.combine(start_of_week, datetime.datetime.min.time()), lesson_duration)
+    
+    if not days:
+        await query.edit_message_text(
+            text="Нет доступных дней для переноса на выбранной неделе.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    buttons = [[InlineKeyboardButton(f"{d['day_name']} {d['date'].strftime('%d.%m.%Y')}", callback_data=f"reschedule_day_{d['date'].weekday()}")] for d in days]
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")])
+    
+    await query.edit_message_text(
+        text="Выберите день для переноса:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RESCHEDULE_CHOOSE_DAY
+
+async def student_reschedule_choose_day(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем наличие schedule_id
+    if 'reschedule_schedule_id' not in context.user_data:
+        await query.edit_message_text(
+            text="❌ Ошибка: не выбрано занятие для переноса. Попробуйте снова.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    day_of_week = int(query.data.split('_')[-1])
+    week_offset = context.user_data.get('reschedule_week_offset', 0)
+    
+    # Вычисляем дату для выбранного дня недели
+    today = datetime.datetime.now()
+    target_date = today + timedelta(weeks=week_offset)
+    
+    # Находим ближайший выбранный день недели
+    while target_date.weekday() != day_of_week:
+        target_date += timedelta(days=1)
+    
+    context.user_data['reschedule_date'] = target_date
+    
+    # Получаем доступные слоты времени
+    db = context.bot_data['db']
+    schedule_id = context.user_data['reschedule_schedule_id']
+    schedule = db.get_schedule_by_id(schedule_id)
+    lesson_duration = schedule.duration
+    slots = db.get_available_slots_for_day(target_date, lesson_duration)
+    
+    if not slots:
+        await query.edit_message_text(
+            text="Нет доступных слотов на выбранный день.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    # Сбрасываем страницу для времени
+    context.user_data['reschedule_time_page'] = 0
+    
+    # Пагинация слотов по 6 на страницу
+    page = 0
+    per_page = 6
+    total = len(slots)
+    max_page = (total + per_page - 1) // per_page - 1
+    page_slots = slots[page * per_page:min(page * per_page + per_page, total)]
+    slot_buttons = [[InlineKeyboardButton(slot['display'], callback_data=f"reschedule_time_{slot['time']}")] for slot in page_slots]
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️", callback_data="reschedule_time_prev"))
+    if page < max_page:
+        nav_buttons.append(InlineKeyboardButton("➡️", callback_data="reschedule_time_next"))
+    slot_buttons.append(nav_buttons)
+    slot_buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")])
+    await query.edit_message_text(
+        text="Выберите время для переноса:",
+        reply_markup=InlineKeyboardMarkup(slot_buttons)
+    )
+    return RESCHEDULE_CHOOSE_TIME
+
+async def student_reschedule_choose_time(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем наличие schedule_id
+    if 'reschedule_schedule_id' not in context.user_data:
+        await query.edit_message_text(
+            text="❌ Ошибка: не выбрано занятие для переноса. Попробуйте снова.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    # Обработка пагинации
+    if query.data == "reschedule_time_prev":
+        page = int(context.user_data.get('reschedule_time_page', 0))
+        if page > 0:
+            context.user_data['reschedule_time_page'] = page - 1
+        # Показываем слоты с обновленной страницей
+        date = context.user_data['reschedule_date']
+        db = context.bot_data['db']
+        schedule_id = context.user_data['reschedule_schedule_id']
+        schedule = db.get_schedule_by_id(schedule_id)
+        lesson_duration = schedule.duration
+        slots = db.get_available_slots_for_day(date, lesson_duration)
+        
+        if not slots:
+            await query.edit_message_text(
+                text="Нет доступных слотов на выбранный день.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+            )
+            return ConversationHandler.END
+        
+        page = int(context.user_data.get('reschedule_time_page', 0))
+        per_page = 6
+        total = len(slots)
+        max_page = (total + per_page - 1) // per_page - 1
+        page_slots = slots[page * per_page:min(page * per_page + per_page, total)]
+        slot_buttons = [[InlineKeyboardButton(slot['display'], callback_data=f"reschedule_time_{slot['time']}")] for slot in page_slots]
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data="reschedule_time_prev"))
+        if page < max_page:
+            nav_buttons.append(InlineKeyboardButton("➡️", callback_data="reschedule_time_next"))
+        slot_buttons.append(nav_buttons)
+        slot_buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")])
+        await query.edit_message_text(
+            text="Выберите время для переноса:",
+            reply_markup=InlineKeyboardMarkup(slot_buttons)
+        )
+        return RESCHEDULE_CHOOSE_TIME
+    
+    elif query.data == "reschedule_time_next":
+        page = int(context.user_data.get('reschedule_time_page', 0))
+        context.user_data['reschedule_time_page'] = page + 1
+        # Показываем слоты с обновленной страницей
+        date = context.user_data['reschedule_date']
+        db = context.bot_data['db']
+        schedule_id = context.user_data['reschedule_schedule_id']
+        schedule = db.get_schedule_by_id(schedule_id)
+        lesson_duration = schedule.duration
+        slots = db.get_available_slots_for_day(date, lesson_duration)
+        
+        if not slots:
+            await query.edit_message_text(
+                text="Нет доступных слотов на выбранный день.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+            )
+            return ConversationHandler.END
+        
+        page = int(context.user_data.get('reschedule_time_page', 0))
+        per_page = 6
+        total = len(slots)
+        max_page = (total + per_page - 1) // per_page - 1
+        page_slots = slots[page * per_page:min(page * per_page + per_page, total)]
+        slot_buttons = [[InlineKeyboardButton(slot['display'], callback_data=f"reschedule_time_{slot['time']}")] for slot in page_slots]
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️", callback_data="reschedule_time_prev"))
+        if page < max_page:
+            nav_buttons.append(InlineKeyboardButton("➡️", callback_data="reschedule_time_next"))
+        slot_buttons.append(nav_buttons)
+        slot_buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")])
+        await query.edit_message_text(
+            text="Выберите время для переноса:",
+            reply_markup=InlineKeyboardMarkup(slot_buttons)
+        )
+        return RESCHEDULE_CHOOSE_TIME
+    
+    # Обработка выбора времени
+    time_str = query.data.split('_')[-1]
+    if ':' not in time_str:  # Это не время, а команда пагинации
+        return RESCHEDULE_CHOOSE_TIME
+    
+    # Сохраняем выбранное время
+    context.user_data['reschedule_time'] = time_str
+    
+    # Показываем подтверждение
+    schedule_id = context.user_data['reschedule_schedule_id']
+    db = context.bot_data['db']
+    schedule = db.get_schedule_by_id(schedule_id)
+    student = db.get_student_by_id(schedule.student_id)
+    
+    # Получаем информацию о текущем занятии
+    days_ru = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    current_day = days_ru[schedule.day_of_week]
+    current_time = schedule.time
+    current_duration = schedule.duration
+    # Дата текущего занятия (берём ближайшую дату в будущем по дню недели)
+    today = datetime.datetime.now().date()
+    current_date = today + datetime.timedelta((schedule.day_of_week - today.weekday()) % 7)
+    current_date_str = current_date.strftime('%d.%m.%Y')
+
+    # Получаем информацию о новом времени
+    new_date = context.user_data['reschedule_date']
+    new_day = days_ru[new_date.weekday()]
+    new_time = time_str
+    new_date_str = new_date.strftime('%d.%m.%Y')
+
+    confirmation_text = (
+        f"📅 <b>Подтверждение переноса</b>\n\n"
+        f"📚 <b>Текущее занятие:</b> {current_day}, {current_date_str} в {current_time}\n\n"
+        f"🔄 <b>Новое время:</b> {new_day}, {new_date_str} в {new_time}\n\n"
+        f"Подтверждаете перенос?"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Подтвердить", callback_data="reschedule_confirm")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="student_reschedule")]
+    ]
+    
+    await query.edit_message_text(
+        text=confirmation_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+    return RESCHEDULE_CONFIRM
+
+async def student_reschedule_confirm(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    # Проверяем наличие необходимых данных
+    if 'reschedule_schedule_id' not in context.user_data:
+        await query.edit_message_text(
+            text="❌ Ошибка: не выбрано занятие для переноса. Попробуйте снова.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_reschedule")]])
+        )
+        return ConversationHandler.END
+    
+    if query.data == "reschedule_confirm":
+        # Создаем запрос на перенос
+        schedule_id = context.user_data['reschedule_schedule_id']
+        new_date = context.user_data['reschedule_date']
+        new_time = context.user_data['reschedule_time']
+        
+        db = context.bot_data['db']
+        schedule = db.get_schedule_by_id(schedule_id)
+        student = db.get_student_by_id(schedule.student_id)
+        
+        # Создаем запрос на перенос
+        reschedule_request = db.create_reschedule_request(
+            student_id=student.id,
+            schedule_id=schedule_id,
+            requested_date=new_date,
+            requested_time=new_time,
+            status='pending'
+        )
+        
+        if reschedule_request:
+            # Отправляем уведомление администратору
+            admin_ids = db.get_admin_ids()
+            for admin_id in admin_ids:
+                try:
+                    admin = db.get_admin_by_telegram_id(admin_id)
+                    if admin:
+                        days_ru = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+                        today = datetime.datetime.now().date()
+                        current_date_obj = today + datetime.timedelta((schedule.day_of_week - today.weekday()) % 7)
+                        current_date_str = current_date_obj.strftime('%d.%m.%Y')
+                        current_day_ru = days_ru[schedule.day_of_week]
+                        new_day_ru = days_ru[new_date.weekday()]
+                        new_date_str = new_date.strftime('%d.%m.%Y')
+                        notification_text = (
+                            f"👤 <b>Студент:</b> {student.name}\n\n"
+                            f"📚 <b>Текущее занятие:</b> {current_day_ru}, {current_date_str} в {schedule.time}\n\n"
+                            f"🔄 <b>Запрошенное время:</b> {new_day_ru}, {new_date_str} в {new_time}"
+                        )
+                        db.add_admin_notification(admin.id, 'reschedule', notification_text)
+                    # 1. Push-уведомление
+                    push_msg = await context.bot.send_message(
+                        chat_id=admin_id,
+                        text="🔔 Новый запрос на перенос занятия! Откройте меню для подробностей.",
+                    )
+                    # Сохраняем ID push-сообщения для возможности удаления
+                    if admin:
+                        db.add_admin_push_message(admin.id, push_msg.message_id)
+                    # 2. Обновление меню администратора с актуальным счетчиком уведомлений
+                    from handlers.admin_handlers import send_admin_menu_by_chat_id
+                    await send_admin_menu_by_chat_id(context, admin_id)
+                except Exception as e:
+                    print(f"Ошибка отправки уведомления админу {admin_id}: {e}")
+            # Подтверждаем студенту
+            await query.edit_message_text(
+                text="✅ Запрос на перенос отправлен! Ожидайте подтверждения от преподавателя.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в меню", callback_data="student_menu")]])
+            )
+        else:
+            await query.edit_message_text(
+                text="❌ Ошибка при создании запроса на перенос. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в меню", callback_data="student_menu")]])
+            )
+    else:
+        # Отмена - возвращаемся к расписанию
+        await show_student_schedule_menu(update, context)
+        return ConversationHandler.END
+    return ConversationHandler.END
+
+async def student_reschedule_send(update, context):
+    # Эта функция больше не используется, логика перенесена в student_reschedule_confirm
+    pass
+
+async def student_reschedule_menu(update, context):
+    """Показывает меню переносов занятий"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Очищаем данные предыдущего переноса
+    reschedule_keys = ['reschedule_schedule_id', 'reschedule_week_offset', 'reschedule_date', 'reschedule_time', 'reschedule_time_page']
+    for key in reschedule_keys:
+        if key in context.user_data:
+            del context.user_data[key]
+    
+    # Получаем студента из базы данных
+    db = context.bot_data['db']
+    user_id = query.from_user.id
+    
+    student = db.get_student_by_telegram_id(user_id)
+    
+    if not student:
+        await query.edit_message_text(
+            text="❌ Студент не найден в базе данных.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+        )
+        return ConversationHandler.END
+    
+    schedules = db.get_student_schedule(student.id)
+    
+    if not schedules:
+        await query.edit_message_text(
+            text="❌ У вас нет занятий для переноса.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+        )
+        return ConversationHandler.END
+    
+    # Выбор занятия
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    try:
+        buttons = [[InlineKeyboardButton(f"{days[s.day_of_week]} {s.time}", callback_data=f"reschedule_lesson_{s.id}")] for s in schedules]
+    except Exception as e:
+        await query.edit_message_text(
+            text=f"❌ Техническая ошибка при формировании меню переноса.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+        )
+        return ConversationHandler.END
+    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    
+    await query.edit_message_text(
+        text="Выберите занятие, которое хотите перенести:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return RESCHEDULE_CHOOSE_LESSON
+
+async def show_student_schedule_menu(update, context, student=None):
+    """
+    Показывает меню расписания ученика.
+    Если student не передан, берётся из context.user_data['student'] или из базы данных.
+    """
+    # Очищаем данные предыдущего переноса
+    reschedule_keys = ['reschedule_schedule_id', 'reschedule_week_offset', 'reschedule_date', 'reschedule_time', 'reschedule_time_page']
+    for key in reschedule_keys:
+        if key in context.user_data:
+            del context.user_data[key]
+    query = update.callback_query
+    db = context.bot_data['db']
+    if student is None:
+        student = context.user_data.get('student')
+        if student is None:
+            # Если студент не найден в context, ищем по telegram_id
+            user_id = query.from_user.id
+            student = db.get_student_by_telegram_id(user_id)
+            if student is None:
+                await query.edit_message_text(
+                    text="❌ Студент не найден в базе данных.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+                )
+                return
+    schedules = db.get_student_schedule(student.id)
+    next_lesson = db.get_next_lesson(student.id)
+    if not schedules:
+        await query.edit_message_text(
+            text="📅 <b>Ваше расписание</b>\n\n❌ Расписание не настроено.\n\nОбратитесь к администратору для настройки расписания.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]]),
+            parse_mode=ParseMode.HTML
+        )
+        return
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    schedule_text = "📅 <b>Ваше расписание</b>\n\n"
+    for schedule in schedules:
+        day_name = days[schedule.day_of_week]
+        schedule_text += f"📅 <b>{day_name}</b> в {schedule.time}\n"
+    if next_lesson:
+        next_date = format_moscow_time(next_lesson['date'], '%d.%m.%Y')
+        schedule_text += f"\n🎯 <b>Следующее занятие:</b>\n"
+        schedule_text += f"📅 {next_lesson['day_name']}, {next_date}\n"
+        schedule_text += f"⏰ Время: {next_lesson['time']}\n"
+        schedule_text += f"⏱️ Длительность: {next_lesson['duration']} минут"
+    buttons = [
+        [InlineKeyboardButton("🔄 Перенести занятие", callback_data="student_reschedule")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
+    ]
+    await query.edit_message_text(
+        text=schedule_text,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.HTML
+    )
