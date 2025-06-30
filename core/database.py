@@ -206,6 +206,22 @@ class PendingNoteAssignment(Base):
     origin = Column(String, nullable=True)  # источник процесса (например, 'give_homework', 'check_unassigned')
     created_at = Column(DateTime, default=func.now())
 
+class Schedule(Base):
+    __tablename__ = 'schedule'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    day_of_week = Column(Integer, nullable=False)  # 0=Понедельник, 1=Вторник, ..., 6=Воскресенье
+    time = Column(String, nullable=False)  # Время в формате "HH:MM"
+    duration = Column(Integer, default=60)  # Длительность в минутах
+    is_active = Column(Boolean, default=True)  # Активно ли занятие
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Создаем уникальный индекс для предотвращения дублирования расписания
+    __table_args__ = (
+        UniqueConstraint('student_id', 'day_of_week', 'time', name='unique_student_schedule'),
+    )
+
 class Database:
     def __init__(self):
         self.engine = create_engine('sqlite:///students.db')
@@ -1045,4 +1061,158 @@ class Database:
             session.query(PendingNoteAssignment).filter(PendingNoteAssignment.created_at < threshold).delete()
             session.commit()
         finally:
-            session.close() 
+            session.close()
+
+    # Методы для работы с расписанием
+    def add_schedule(self, student_id: int, day_of_week: int, time: str, duration: int = 60) -> bool:
+        """Добавляет занятие в расписание студента"""
+        session = self.Session()
+        try:
+            # Проверяем, нет ли уже занятия в это время в этот день
+            existing = session.query(Schedule).filter_by(
+                student_id=student_id,
+                day_of_week=day_of_week,
+                time=time
+            ).first()
+            
+            if existing:
+                return False  # Занятие уже существует
+            
+            schedule = Schedule(
+                student_id=student_id,
+                day_of_week=day_of_week,
+                time=time,
+                duration=duration
+            )
+            session.add(schedule)
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_student_schedule(self, student_id: int) -> list:
+        """Получает расписание студента"""
+        session = self.Session()
+        try:
+            return session.query(Schedule).filter_by(
+                student_id=student_id,
+                is_active=True
+            ).order_by(Schedule.day_of_week, Schedule.time).all()
+        finally:
+            session.close()
+
+    def update_schedule(self, schedule_id: int, day_of_week: int = None, time: str = None, duration: int = None, is_active: bool = None) -> bool:
+        """Обновляет занятие в расписании"""
+        session = self.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            if not schedule:
+                return False
+            
+            # Проверяем конфликты при изменении дня или времени
+            if day_of_week is not None or time is not None:
+                new_day = day_of_week if day_of_week is not None else schedule.day_of_week
+                new_time = time if time is not None else schedule.time
+                
+                # Проверяем, нет ли уже занятия в это время в этот день (исключая текущее занятие)
+                existing = session.query(Schedule).filter_by(
+                    student_id=schedule.student_id,
+                    day_of_week=new_day,
+                    time=new_time
+                ).filter(Schedule.id != schedule_id).first()
+                
+                if existing:
+                    return False  # Конфликт с существующим занятием
+            
+            if day_of_week is not None:
+                schedule.day_of_week = day_of_week
+            if time is not None:
+                schedule.time = time
+            if duration is not None:
+                schedule.duration = duration
+            if is_active is not None:
+                schedule.is_active = is_active
+            
+            schedule.updated_at = datetime.now()
+            session.commit()
+            return True
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def delete_schedule(self, schedule_id: int) -> bool:
+        """Удаляет занятие из расписания"""
+        session = self.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            if schedule:
+                session.delete(schedule)
+                session.commit()
+                return True
+            return False
+        except:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_next_lesson(self, student_id: int) -> dict:
+        """Получает информацию о следующем занятии студента"""
+        session = self.Session()
+        try:
+            now = datetime.now()
+            current_day = now.weekday()  # 0=Понедельник, 6=Воскресенье
+            current_time = now.strftime("%H:%M")
+            
+            # Получаем все активные занятия студента
+            schedules = session.query(Schedule).filter_by(
+                student_id=student_id,
+                is_active=True
+            ).order_by(Schedule.day_of_week, Schedule.time).all()
+            
+            if not schedules:
+                return None
+            
+            # Ищем следующее занятие
+            for schedule in schedules:
+                if schedule.day_of_week > current_day or (schedule.day_of_week == current_day and schedule.time > current_time):
+                    # Вычисляем дату следующего занятия
+                    days_ahead = schedule.day_of_week - current_day
+                    if days_ahead < 0:
+                        days_ahead += 7
+                    next_lesson_date = now + timedelta(days=days_ahead)
+                    
+                    return {
+                        'schedule': schedule,
+                        'date': next_lesson_date,
+                        'day_name': self._get_day_name(schedule.day_of_week),
+                        'time': schedule.time,
+                        'duration': schedule.duration
+                    }
+            
+            # Если не нашли в этой неделе, берем первое занятие следующей недели
+            first_schedule = schedules[0]
+            days_ahead = (7 - current_day + first_schedule.day_of_week) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            next_lesson_date = now + timedelta(days=days_ahead)
+            
+            return {
+                'schedule': first_schedule,
+                'date': next_lesson_date,
+                'day_name': self._get_day_name(first_schedule.day_of_week),
+                'time': first_schedule.time,
+                'duration': first_schedule.duration
+            }
+        finally:
+            session.close()
+
+    def _get_day_name(self, day_of_week: int) -> str:
+        """Возвращает название дня недели"""
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        return days[day_of_week] 

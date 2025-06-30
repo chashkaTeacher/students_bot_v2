@@ -1,10 +1,10 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-from core.database import Database
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from telegram.constants import ParseMode
+from core.database import Database, format_moscow_time
 import os
 import datetime
-from core.database import format_moscow_time
+import pytz
 
 # Состояния для ConversationHandler
 ENTER_PASSWORD = 0
@@ -255,22 +255,69 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer("Это последняя страница")
         return
     elif query.data == "student_schedule":
+        # Получаем расписание студента
+        schedules = db.get_student_schedule(student.id)
+        next_lesson = db.get_next_lesson(student.id)
+        
+        if not schedules:
+            await query.edit_message_text(
+                text="📅 <b>Ваше расписание</b>\n\n❌ Расписание не настроено.\n\nОбратитесь к администратору для настройки расписания.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="student_back")
+                ]]),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        # Формируем текст расписания
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        schedule_text = "📅 <b>Ваше расписание</b>\n\n"
+        
+        for schedule in schedules:
+            day_name = days[schedule.day_of_week]
+            duration_text = f" ({schedule.duration} мин)" if schedule.duration != 60 else ""
+            schedule_text += f"📅 <b>{day_name}</b> в {schedule.time}{duration_text}\n"
+        
+        # Добавляем информацию о следующем занятии
+        if next_lesson:
+            next_date = format_moscow_time(next_lesson['date'], '%d.%m.%Y')
+            schedule_text += f"\n🎯 <b>Следующее занятие:</b>\n"
+            schedule_text += f"📅 {next_lesson['day_name']}, {next_date}\n"
+            schedule_text += f"⏰ Время: {next_lesson['time']}\n"
+            schedule_text += f"⏱️ Длительность: {next_lesson['duration']} минут"
+        
         await query.edit_message_text(
-            text="📅 Раздел расписания в разработке",
+            text=schedule_text,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Назад", callback_data="student_back")
-            ]])
+            ]]),
+            parse_mode=ParseMode.HTML
         )
     elif query.data == "student_join_lesson":
         if student and student.lesson_link:
-            # Заглушка для даты следующего занятия (пока что показываем "скоро")
-            next_lesson_date = "скоро"
+            # Получаем информацию о следующем занятии
+            next_lesson = db.get_next_lesson(student.id)
+            
+            if next_lesson:
+                next_date = format_moscow_time(next_lesson['date'], '%d.%m.%Y')
+                lesson_text = (
+                    f"📅 <b>Следующее занятие</b>\n\n"
+                    f"🗓️ Дата: {next_date}\n"
+                    f"📅 День: {next_lesson['day_name']}\n"
+                    f"⏰ Время: {next_lesson['time']}\n"
+                    f"⏱️ Длительность: {next_lesson['duration']} минут\n\n"
+                    f"Нажмите кнопку ниже, чтобы подключиться к занятию:"
+                )
+            else:
+                lesson_text = (
+                    f"📅 <b>Подключение к занятию</b>\n\n"
+                    f"🗓️ Дата: уточняется\n"
+                    f"⏰ Время: уточняется\n\n"
+                    f"Нажмите кнопку ниже, чтобы подключиться к занятию:"
+                )
             
             await query.edit_message_text(
-                text=f"📅 <b>Следующее занятие</b>\n\n"
-                     f"🗓️ Дата: {next_lesson_date}\n"
-                     f"⏰ Время: уточняется\n\n"
-                     f"Нажмите кнопку ниже, чтобы подключиться к занятию:",
+                text=lesson_text,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🎥 Подключиться к занятию", url=student.lesson_link)],
                     [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
@@ -380,6 +427,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
                 notif_type = "📚 Домашнее задание"
             elif notif.type == 'variant':
                 notif_type = "📄 Вариант"
+            elif notif.type == 'schedule':
+                notif_type = "📅 Расписание"
             else:
                 notif_type = "📢 Уведомление"
             
@@ -399,32 +448,31 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
-        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
-        if page < max_page:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
-        if len(nav_row) > 1:
-            keyboard = [nav_row]
-        else:
-            keyboard = []
         buttons = []
-        if nav_row:
+        
+        # Показываем навигацию только если есть больше одной страницы
+        if max_page > 0:
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+            nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+            if page < max_page:
+                nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
             buttons.append(nav_row)
+        
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
-        # Красивый заголовок с информацией о страницах
+        # Красивый заголовок с информацией о страницах только если есть больше одной страницы
         header = f"🔔 <b>Ваши уведомления</b>\n"
-        header += f"📊 Всего: {total} | Страница {page + 1} из {(total + per_page - 1) // per_page}\n"
+        header += f"📊 Всего: {total}\n"
         header += "─────────────\n\n"
         
         await query.edit_message_text(
             text=header + text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False
+            disable_web_page_preview=True
         )
         return
     elif query.data == "notif_next":
@@ -452,6 +500,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
                 notif_type = "📚 Домашнее задание"
             elif notif.type == 'variant':
                 notif_type = "📄 Вариант"
+            elif notif.type == 'schedule':
+                notif_type = "📅 Расписание"
             else:
                 notif_type = "📢 Уведомление"
             
@@ -471,32 +521,31 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
-        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
-        if page < max_page:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
-        if len(nav_row) > 1:
-            keyboard = [nav_row]
-        else:
-            keyboard = []
         buttons = []
-        if nav_row:
+        
+        # Показываем навигацию только если есть больше одной страницы
+        if max_page > 0:
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+            nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+            if page < max_page:
+                nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
             buttons.append(nav_row)
+        
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
-        # Красивый заголовок с информацией о страницах
+        # Красивый заголовок с информацией о страницах только если есть больше одной страницы
         header = f"🔔 <b>Ваши уведомления</b>\n"
-        header += f"📊 Всего: {total} | Страница {page + 1} из {(total + per_page - 1) // per_page}\n"
+        header += f"📊 Всего: {total}\n"
         header += "─────────────\n\n"
         
         await query.edit_message_text(
             text=header + text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False
+            disable_web_page_preview=True
         )
         return
     elif query.data == "notif_prev":
@@ -524,6 +573,8 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
                 notif_type = "📚 Домашнее задание"
             elif notif.type == 'variant':
                 notif_type = "📄 Вариант"
+            elif notif.type == 'schedule':
+                notif_type = "📅 Расписание"
             else:
                 notif_type = "📢 Уведомление"
             
@@ -543,32 +594,31 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         
         text = "\n\n".join(notif_texts)
         db.mark_notifications_read(student.id)
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
-        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
-        if page < max_page:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
-        if len(nav_row) > 1:
-            keyboard = [nav_row]
-        else:
-            keyboard = []
         buttons = []
-        if nav_row:
+        
+        # Показываем навигацию только если есть больше одной страницы
+        if max_page > 0:
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("◀️", callback_data="notif_prev"))
+            nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+            if page < max_page:
+                nav_row.append(InlineKeyboardButton("▶️", callback_data="notif_next"))
             buttons.append(nav_row)
+        
         buttons.append([InlineKeyboardButton("🗑️ Очистить все", callback_data="notif_clear")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
         
-        # Красивый заголовок с информацией о страницах
+        # Красивый заголовок с информацией о страницах только если есть больше одной страницы
         header = f"🔔 <b>Ваши уведомления</b>\n"
-        header += f"📊 Всего: {total} | Страница {page + 1} из {(total + per_page - 1) // per_page}\n"
+        header += f"📊 Всего: {total}\n"
         header += "─────────────\n\n"
         
         await query.edit_message_text(
             text=header + text,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False
+            disable_web_page_preview=True
         )
         return
     elif query.data == "notif_clear":

@@ -206,7 +206,28 @@ def migrate_database():
     except Exception:
         pass  # Таблица уже существует
     
-    # Миграция 16: создание таблицы push_messages
+    # Миграция 16: создание таблицы schedule
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE schedule (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id INTEGER NOT NULL,
+                    day_of_week INTEGER NOT NULL,
+                    time VARCHAR NOT NULL,
+                    duration INTEGER DEFAULT 60,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (student_id) REFERENCES students (id),
+                    UNIQUE(student_id, day_of_week, time)
+                )
+            """))
+            conn.commit()
+    except Exception:
+        pass  # Таблица уже существует
+    
+    # Миграция 17: создание таблицы push_messages
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -222,7 +243,7 @@ def migrate_database():
     except Exception:
         pass  # Таблица уже существует
     
-    # Миграция 17: создание таблицы student_notes
+    # Миграция 18: создание таблицы student_notes
     try:
         with engine.connect() as conn:
             conn.execute(text("""
@@ -239,7 +260,7 @@ def migrate_database():
     except Exception:
         pass  # Таблица уже существует
     
-    # Миграция 18: исправление столбца admin_id на user_id в pending_note_assignments
+    # Миграция 19: исправление столбца admin_id на user_id в pending_note_assignments
     try:
         with engine.connect() as conn:
             # Проверяем, есть ли столбец admin_id

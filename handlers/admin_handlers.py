@@ -1,10 +1,12 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from core.database import Database, ExamType, PendingNoteAssignment
-from handlers.student_handlers import student_menu, send_student_menu_by_chat_id
+from core.database import Database, ExamType, PendingNoteAssignment, Schedule
 import os
 import uuid
 import json
+import asyncio
+from datetime import datetime, timedelta
+import pytz
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -22,6 +24,9 @@ GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TA
 
 # Состояние для выбора статуса домашнего задания
 GIVE_HOMEWORK_STATUS = 103
+
+# Состояние для меню выдачи домашнего задания
+GIVE_HOMEWORK_MENU = 99
 
 # Новые состояния для школьной программы
 SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE, SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE = range(104, 112)
@@ -59,6 +64,9 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) 
         ],
         [
             InlineKeyboardButton("📝 Управление конспектами", callback_data="admin_notes"),
+            InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")
+        ],
+        [
             InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")
         ]
     ]
@@ -269,7 +277,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает действия администратора"""
     query = update.callback_query
-    
     try:
         await query.answer()
     except Exception as e:
@@ -277,6 +284,82 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if query.data == "admin_stats":
         return await show_statistics_menu(update, context)
+    elif query.data == "admin_schedule":
+        await show_schedule_menu(update, context)
+        return ConversationHandler.END
+    elif query.data.startswith("schedule_exam_"):
+        # Новый формат: schedule_exam_view, schedule_exam_add, etc.
+        parts = query.data.split("_")
+        if len(parts) >= 4:
+            action = parts[2]  # view, add, edit, delete
+            exam_type = parts[3]  # OGE, EGE, SCHOOL
+            await show_schedule_student_selection(update, context, action, exam_type)
+            return ConversationHandler.END
+        else:
+            # Старый формат для обратной совместимости
+            action = parts[2]  # view, add, edit, delete
+            await show_schedule_exam_selection(update, context, action)
+            return ConversationHandler.END
+    elif query.data.startswith("admin_view_schedule"):
+        await show_schedule_exam_selection(update, context, "view")
+        return ConversationHandler.END
+    elif query.data.startswith("admin_add_schedule"):
+        await show_schedule_exam_selection(update, context, "add")
+        return ConversationHandler.END
+    elif query.data.startswith("admin_edit_schedule"):
+        await show_schedule_exam_selection(update, context, "edit")
+        return ConversationHandler.END
+    elif query.data.startswith("admin_delete_schedule"):
+        await show_schedule_exam_selection(update, context, "delete")
+        return ConversationHandler.END
+    elif query.data.startswith("schedule_view_student_"):
+        student_id = int(query.data.split("_")[-1])
+        await show_student_schedule(update, context, student_id)
+        return ConversationHandler.END
+    elif query.data.startswith("schedule_add_student_"):
+        student_id = int(query.data.split("_")[-1])
+        return await show_add_schedule_form(update, context, student_id)
+    elif query.data.startswith("schedule_edit_student_"):
+        student_id = int(query.data.split("_")[-1])
+        await show_schedule_edit_menu(update, context, student_id)
+        return SCHEDULE_CHOOSE_DAY
+    elif query.data.startswith("schedule_delete_student_"):
+        student_id = int(query.data.split("_")[-1])
+        await show_schedule_delete_menu(update, context, student_id)
+        return SCHEDULE_CHOOSE_DAY
+    elif query.data.startswith("schedule_day_"):
+        day_of_week = int(query.data.split("_")[-1])
+        context.user_data['schedule_day'] = day_of_week
+        
+        await query.edit_message_text(
+            "⏰ Введите время занятия в формате ЧЧ:ММ (например, 14:30):",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return SCHEDULE_ENTER_TIME
+    elif query.data.startswith("schedule_duration_"):
+        return await handle_schedule_duration(update, context)
+    elif query.data.startswith("schedule_edit_"):
+        schedule_id = int(query.data.split("_")[-1])
+        await show_schedule_edit_form(update, context, schedule_id)
+        return SCHEDULE_EDIT_DAY
+    elif query.data.startswith("schedule_delete_"):
+        schedule_id = int(query.data.split("_")[-1])
+        await handle_schedule_delete(update, context, schedule_id)
+        return ConversationHandler.END
+    elif query.data == "edit_schedule_day":
+        return await show_schedule_edit_day_form(update, context)
+    elif query.data == "edit_schedule_time":
+        return await show_schedule_edit_time_form(update, context)
+    elif query.data == "edit_schedule_duration":
+        return await show_schedule_edit_duration_form(update, context)
+    elif query.data.startswith("edit_schedule_day_"):
+        day_of_week = int(query.data.split("_")[-1])
+        return await handle_schedule_edit_day(update, context, day_of_week)
+    elif query.data.startswith("edit_schedule_duration_"):
+        duration = int(query.data.split("_")[-1])
+        return await handle_schedule_edit_duration(update, context, duration)
     
     if query.data.startswith("edit_name_"):
         student_id = int(query.data.split("_")[-1])
@@ -317,10 +400,6 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     elif query.data == "admin_give_homework":
         await give_homework_menu(update, context)
-        return ConversationHandler.END
-    elif query.data == "admin_give_homework_task":
-        from handlers.homework_handlers import show_homework_menu
-        await show_homework_menu(update, context)
         return ConversationHandler.END
     elif query.data == "admin_give_homework_variant":
         await handle_give_homework_variant(update, context)
@@ -1101,11 +1180,11 @@ async def handle_edit_exam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await admin_menu(update, context)
         return ConversationHandler.END
 
-async def give_homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
+async def give_homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
     """Меню выдачи домашнего задания или варианта"""
     keyboard = [
         [
-            InlineKeyboardButton("👤 Ученику", callback_data="admin_give_homework_task"),
+            InlineKeyboardButton("👤 Ученику", callback_data="admin_give_homework"),
             InlineKeyboardButton("📄 Вариант", callback_data="admin_give_homework_variant")
         ],
         [
@@ -1117,6 +1196,7 @@ async def give_homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE 
         "Выберите действие:",
         reply_markup=reply_markup
     )
+    return GIVE_HOMEWORK_MENU
 
 async def handle_give_homework_variant(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
     keyboard = [
@@ -2084,3 +2164,889 @@ async def handle_statistics_student_choice(update: Update, context: ContextTypes
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.edit_text(progress_text, reply_markup=reply_markup, parse_mode='HTML', disable_web_page_preview=True)
     return STATISTICS_CHOOSE_STUDENT
+
+# Функции для управления расписанием
+async def show_schedule_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает меню управления расписанием"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📅 Просмотр расписания", callback_data="schedule_exam_view"),
+            InlineKeyboardButton("➕ Добавить занятие", callback_data="schedule_exam_add")
+        ],
+        [
+            InlineKeyboardButton("✏️ Редактировать", callback_data="schedule_exam_edit"),
+            InlineKeyboardButton("❌ Удалить занятие", callback_data="schedule_exam_delete")
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.callback_query.message.edit_text(
+        "📅 Управление расписанием\n"
+        "Выберите действие:",
+        reply_markup=reply_markup
+    )
+
+async def show_schedule_exam_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> None:
+    """Показывает выбор экзамена для работы с расписанием"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 ОГЭ", callback_data=f"schedule_exam_{action}_OGE"),
+            InlineKeyboardButton("📚 ЕГЭ", callback_data=f"schedule_exam_{action}_EGE")
+        ],
+        [InlineKeyboardButton("🏫 Школьная программа", callback_data=f"schedule_exam_{action}_SCHOOL")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    actions = {
+        "view": "просмотра",
+        "add": "добавления",
+        "edit": "редактирования",
+        "delete": "удаления"
+    }
+    
+    await query.edit_message_text(
+        f"📚 Выберите тип экзамена для {actions.get(action, '')} расписания:",
+        reply_markup=reply_markup
+    )
+
+async def show_schedule_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, exam_type: str = None) -> None:
+    """Показывает выбор студента для работы с расписанием"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    
+    # Если указан тип экзамена, фильтруем студентов
+    if exam_type:
+        students = db.get_students_by_exam_type(ExamType[exam_type])
+    else:
+        students = db.get_all_students()
+    
+    if not students:
+        exam_text = f" для {ExamType[exam_type].value}" if exam_type else ""
+        await query.edit_message_text(
+            f"❌ Нет студентов{exam_text} в базе данных.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    keyboard = []
+    for student in students:
+        display_name = student.display_name or student.name
+        student_exam_type = student.exam_type.value if student.exam_type else "Не указан"
+        button_text = f"{display_name} ({student_exam_type})"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"schedule_{action}_student_{student.id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    actions = {
+        "view": "просмотра",
+        "add": "добавления",
+        "edit": "редактирования",
+        "delete": "удаления"
+    }
+    
+    exam_text = f" для {ExamType[exam_type].value}" if exam_type else ""
+    await query.edit_message_text(
+        f"👥 Выберите студента для {actions.get(action, '')} расписания{exam_text}:",
+        reply_markup=reply_markup
+    )
+
+async def show_student_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, student_id: int) -> None:
+    """Показывает расписание конкретного студента"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    schedules = db.get_student_schedule(student_id)
+    
+    if not student:
+        await query.edit_message_text(
+            "❌ Студент не найден.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    display_name = student.display_name or student.name
+    
+    if not schedules:
+        text = f"📅 <b>Расписание {display_name}</b>\n\n❌ Расписание не настроено."
+    else:
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        text = f"📅 <b>Расписание {display_name}</b>\n\n"
+        
+        for schedule in schedules:
+            day_name = days[schedule.day_of_week]
+            duration_text = f" ({schedule.duration} мин)" if schedule.duration != 60 else ""
+            text += f"📅 <b>{day_name}</b> в {schedule.time}{duration_text}\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить занятие", callback_data=f"schedule_add_student_{student_id}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+async def show_add_schedule_form(update: Update, context: ContextTypes.DEFAULT_TYPE, student_id: int) -> int:
+    """Показывает форму добавления занятия"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['schedule_student_id'] = student_id
+    
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    keyboard = []
+    
+    for i, day in enumerate(days):
+        keyboard.append([InlineKeyboardButton(day, callback_data=f"schedule_day_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"schedule_view_student_{student_id}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "📅 Выберите день недели для занятия:",
+        reply_markup=reply_markup
+    )
+    
+    return SCHEDULE_CHOOSE_DAY
+
+# Добавляем новые состояния для расписания
+SCHEDULE_CHOOSE_DAY, SCHEDULE_ENTER_TIME, SCHEDULE_ENTER_DURATION = range(4000, 4003)
+
+# Добавляем состояния для редактирования расписания
+SCHEDULE_EDIT_CHOOSE_PARAM, SCHEDULE_EDIT_DAY, SCHEDULE_EDIT_TIME, SCHEDULE_EDIT_DURATION = range(4003, 4007)
+
+async def handle_schedule_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает ввод времени занятия"""
+    time_str = update.message.text.strip()
+    
+    # Проверяем формат времени
+    try:
+        hours, minutes = map(int, time_str.split(':'))
+        if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+            raise ValueError("Invalid time")
+    except:
+        await update.message.reply_text(
+            "❌ Неверный формат времени!\n\n"
+            "Введите время в формате ЧЧ:ММ\n"
+            "Например: 14:30, 09:15, 18:45",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return SCHEDULE_ENTER_TIME
+    
+    context.user_data['schedule_time'] = time_str
+    
+    await update.message.reply_text(
+        "⏱️ Введите длительность занятия в минутах (по умолчанию 60):",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("60 минут", callback_data="schedule_duration_60")],
+            [InlineKeyboardButton("90 минут", callback_data="schedule_duration_90")],
+            [InlineKeyboardButton("120 минут", callback_data="schedule_duration_120")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+        ])
+    )
+    return SCHEDULE_ENTER_DURATION
+
+async def handle_schedule_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает ввод длительности занятия"""
+    if update.callback_query:
+        # Если выбрана кнопка с предустановленной длительностью
+        duration = int(update.callback_query.data.split("_")[-1])
+        await update.callback_query.answer()
+    else:
+        # Если введена длительность вручную
+        try:
+            duration = int(update.message.text.strip())
+            if duration <= 0 or duration > 480:  # Максимум 8 часов
+                raise ValueError("Invalid duration")
+        except:
+            await update.message.reply_text(
+                "❌ Неверная длительность!\n\n"
+                "Введите число от 1 до 480 минут.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+                ]])
+            )
+            return SCHEDULE_ENTER_DURATION
+    
+    # Сохраняем данные и добавляем занятие
+    student_id = context.user_data.get('schedule_student_id')
+    day_of_week = context.user_data.get('schedule_day')
+    time_str = context.user_data.get('schedule_time')
+    
+    if not all([student_id, day_of_week is not None, time_str]):
+        await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
+            "❌ Ошибка: не все данные заполнены.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    db = context.bot_data['db']
+    success = db.add_schedule(student_id, day_of_week, time_str, duration)
+    
+    if success:
+        student = db.get_student_by_id(student_id)
+        display_name = student.display_name or student.name
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        day_name = days[day_of_week]
+        
+        await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
+            f"✅ Занятие успешно добавлено!\n\n"
+            f"👤 Студент: {display_name}\n"
+            f"📅 День: {day_name}\n"
+            f"⏰ Время: {time_str}\n"
+            f"⏱️ Длительность: {duration} минут",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Добавить еще", callback_data=f"schedule_add_student_{student_id}")],
+                [InlineKeyboardButton("📅 Просмотреть расписание", callback_data=f"schedule_view_student_{student_id}")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+            ])
+        )
+    else:
+        await (update.callback_query.edit_message_text if update.callback_query else update.message.reply_text)(
+            "❌ Ошибка: занятие в это время уже существует.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+    
+    # Очищаем временные данные
+    context.user_data.pop('schedule_student_id', None)
+    context.user_data.pop('schedule_day', None)
+    context.user_data.pop('schedule_time', None)
+    
+    return ConversationHandler.END
+
+async def show_schedule_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, student_id: int) -> None:
+    """Показывает меню редактирования расписания студента"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    schedules = db.get_student_schedule(student_id)
+    
+    if not student:
+        await query.edit_message_text(
+            "❌ Студент не найден.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    if not schedules:
+        await query.edit_message_text(
+            "❌ У студента нет занятий в расписании.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    display_name = student.display_name or student.name
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    
+    keyboard = []
+    for schedule in schedules:
+        day_name = days[schedule.day_of_week]
+        duration_text = f" ({schedule.duration} мин)" if schedule.duration != 60 else ""
+        button_text = f"✏️ {day_name} в {schedule.time}{duration_text}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"schedule_edit_{schedule.id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✏️ <b>Редактирование расписания {display_name}</b>\n\n"
+        f"Выберите занятие для редактирования:",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+async def show_schedule_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, student_id: int) -> None:
+    """Показывает меню удаления расписания студента"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    schedules = db.get_student_schedule(student_id)
+    
+    if not student:
+        await query.edit_message_text(
+            "❌ Студент не найден.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    if not schedules:
+        await query.edit_message_text(
+            "❌ У студента нет занятий в расписании.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return
+    
+    display_name = student.display_name or student.name
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    
+    keyboard = []
+    for schedule in schedules:
+        day_name = days[schedule.day_of_week]
+        duration_text = f" ({schedule.duration} мин)" if schedule.duration != 60 else ""
+        button_text = f"❌ {day_name} в {schedule.time}{duration_text}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"schedule_delete_{schedule.id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"❌ <b>Удаление занятий {display_name}</b>\n\n"
+        f"Выберите занятие для удаления:",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+async def show_schedule_edit_form(update: Update, context: ContextTypes.DEFAULT_TYPE, schedule_id: int) -> None:
+    """Показывает форму редактирования занятия"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    session = db.Session()
+    
+    try:
+        schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+        if not schedule:
+            await query.edit_message_text(
+                "❌ Занятие не найдено.",
+                reply_markup=InlineKeyboardMarkup([[\
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+                ]])
+            )
+            return
+        
+        student = db.get_student_by_id(schedule.student_id)
+        display_name = student.display_name or student.name
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        day_name = days[schedule.day_of_week]
+
+        # Сохраняем id редактируемого занятия
+        context.user_data['edit_schedule_id'] = schedule_id
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("День недели", callback_data="edit_schedule_day"),
+                InlineKeyboardButton("Время", callback_data="edit_schedule_time"),
+                InlineKeyboardButton("Длительность", callback_data="edit_schedule_duration")
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+        ]
+        
+        await query.edit_message_text(
+            f"✏️ <b>Редактирование занятия</b>\n\n"
+            f"👤 Студент: {display_name}\n"
+            f"📅 День: {day_name}\n"
+            f"⏰ Время: {schedule.time}\n"
+            f"⏱️ Длительность: {schedule.duration} минут\n\n"
+            f"Выберите, что хотите изменить:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    finally:
+        session.close()
+
+async def handle_schedule_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, schedule_id: int) -> None:
+    """Обрабатывает удаление занятия"""
+    query = update.callback_query
+    await query.answer()
+    
+    db = context.bot_data['db']
+    session = db.Session()
+    
+    try:
+        schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+        if not schedule:
+            await query.edit_message_text(
+                "❌ Занятие не найдено.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+                ]])
+            )
+            return
+        
+        student = db.get_student_by_id(schedule.student_id)
+        display_name = student.display_name or student.name
+        days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+        day_name = days[schedule.day_of_week]
+        
+        # Удаляем занятие
+        success = db.delete_schedule(schedule_id)
+        
+        if success:
+            await query.edit_message_text(
+                f"✅ Занятие успешно удалено!\n\n"
+                f"👤 Студент: {display_name}\n"
+                f"📅 День: {day_name}\n"
+                f"⏰ Время: {schedule.time}\n"
+                f"⏱️ Длительность: {schedule.duration} минут",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Ошибка при удалении занятия.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+                ]])
+            )
+    finally:
+        session.close()
+
+async def show_schedule_edit_day_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает форму выбора нового дня недели для редактирования"""
+    query = update.callback_query
+    await query.answer()
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    keyboard = []
+    
+    for i, day in enumerate(days):
+        keyboard.append([InlineKeyboardButton(day, callback_data=f"edit_schedule_day_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "📅 Выберите новый день недели для занятия:",
+        reply_markup=reply_markup
+    )
+    
+    return SCHEDULE_EDIT_DAY
+
+async def show_schedule_edit_time_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает форму ввода нового времени для редактирования"""
+    query = update.callback_query
+    await query.answer()
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    await query.edit_message_text(
+        "⏰ Введите новое время занятия в формате ЧЧ:ММ (например, 14:30):",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+        ]])
+    )
+    
+    return SCHEDULE_EDIT_TIME
+
+async def show_schedule_edit_duration_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает форму выбора новой длительности для редактирования"""
+    query = update.callback_query
+    await query.answer()
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    await query.edit_message_text(
+        "⏱️ Выберите новую длительность занятия:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("60 минут", callback_data="edit_schedule_duration_60")],
+            [InlineKeyboardButton("90 минут", callback_data="edit_schedule_duration_90")],
+            [InlineKeyboardButton("120 минут", callback_data="edit_schedule_duration_120")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
+        ])
+    )
+    
+    return SCHEDULE_EDIT_DURATION
+
+async def handle_schedule_edit_day(update: Update, context: ContextTypes.DEFAULT_TYPE, day_of_week: int) -> int:
+    """Обрабатывает изменение дня недели занятия"""
+    query = update.callback_query
+    await query.answer()
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    db = context.bot_data['db']
+    success = db.update_schedule(schedule_id, day_of_week=day_of_week)
+    
+    if success:
+        # Получаем обновленное занятие для отображения
+        session = db.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            student = db.get_student_by_id(schedule.student_id)
+            display_name = student.display_name or student.name
+            days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+            day_name = days[day_of_week]
+            # Отправляем уведомление об изменении дня
+            asyncio.create_task(send_schedule_change_notification(context, student, schedule, changed_fields=['day']))
+            
+            # Перепланировать напоминания для ученика
+            plan_schedule_reminders_for_student(context.job_queue, db, schedule.student_id)
+            
+            await query.edit_message_text(
+                f"✅ День недели успешно изменен!\n\n"
+                f"👤 Студент: {display_name}\n"
+                f"📅 Новый день: {day_name}\n"
+                f"⏰ Время: {schedule.time}\n"
+                f"⏱️ Длительность: {schedule.duration} минут",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+                ])
+            )
+        finally:
+            session.close()
+    else:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие в это время в выбранный день уже существует.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+    
+    # Очищаем временные данные
+    context.user_data.pop('edit_schedule_id', None)
+    return ConversationHandler.END
+
+async def handle_schedule_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает ввод нового времени занятия"""
+    time_str = update.message.text.strip()
+    
+    # Проверяем формат времени
+    try:
+        hours, minutes = map(int, time_str.split(':'))
+        if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+            raise ValueError("Invalid time")
+    except:
+        await update.message.reply_text(
+            "❌ Неверный формат времени!\n\n"
+            "Введите время в формате ЧЧ:ММ\n"
+            "Например: 14:30, 09:15, 18:45",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return SCHEDULE_EDIT_TIME
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await update.message.reply_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    db = context.bot_data['db']
+    success = db.update_schedule(schedule_id, time=time_str)
+    
+    if success:
+        # Получаем обновленное занятие для отображения
+        session = db.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            student = db.get_student_by_id(schedule.student_id)
+            display_name = student.display_name or student.name
+            days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+            day_name = days[schedule.day_of_week]
+            # Отправляем уведомление об изменении времени
+            asyncio.create_task(send_schedule_change_notification(context, student, schedule, changed_fields=['time']))
+            
+            # Перепланировать напоминания для ученика
+            plan_schedule_reminders_for_student(context.job_queue, db, schedule.student_id)
+            
+            await update.message.reply_text(
+                f"✅ Время успешно изменено!\n\n"
+                f"👤 Студент: {display_name}\n"
+                f"📅 День: {day_name}\n"
+                f"⏰ Новое время: {time_str}\n"
+                f"⏱️ Длительность: {schedule.duration} минут",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+                ])
+            )
+        finally:
+            session.close()
+    else:
+        await update.message.reply_text(
+            "❌ Ошибка: занятие в это время в этот день уже существует.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+    
+    # Очищаем временные данные
+    context.user_data.pop('edit_schedule_id', None)
+    return ConversationHandler.END
+
+async def handle_schedule_edit_duration(update: Update, context: ContextTypes.DEFAULT_TYPE, duration: int) -> int:
+    """Обрабатывает изменение длительности занятия"""
+    query = update.callback_query
+    await query.answer()
+    
+    schedule_id = context.user_data.get('edit_schedule_id')
+    if not schedule_id:
+        await query.edit_message_text(
+            "❌ Ошибка: занятие не выбрано.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    db = context.bot_data['db']
+    success = db.update_schedule(schedule_id, duration=duration)
+    
+    if success:
+        # Получаем обновленное занятие для отображения
+        session = db.Session()
+        try:
+            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+            student = db.get_student_by_id(schedule.student_id)
+            display_name = student.display_name or student.name
+            days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+            day_name = days[schedule.day_of_week]
+            
+            await query.edit_message_text(
+                f"✅ Длительность успешно изменена!\n\n"
+                f"👤 Студент: {display_name}\n"
+                f"📅 День: {day_name}\n"
+                f"⏰ Время: {schedule.time}\n"
+                f"⏱️ Новая длительность: {duration} минут",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Управление расписанием", callback_data="admin_schedule")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+                ])
+            )
+        finally:
+            session.close()
+    else:
+        await query.edit_message_text(
+            "❌ Ошибка при изменении длительности.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")
+            ]])
+        )
+    
+    # Очищаем временные данные
+    context.user_data.pop('edit_schedule_id', None)
+    return ConversationHandler.END
+
+async def send_schedule_change_notification(context, student, schedule, changed_fields):
+    """Отправляет уведомление ученику об изменении расписания (день или время)"""
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    day_name = days[schedule.day_of_week]
+    
+    # Формируем текст уведомления
+    text = f"⚠️ Ваше занятие изменено!\n"
+    if 'day' in changed_fields:
+        text += f"Новый день: {day_name}\n"
+    if 'time' in changed_fields:
+        text += f"Новое время: {schedule.time}\n"
+    text += f"\nПожалуйста, проверьте расписание в меню."
+    
+    # Добавляем уведомление в базу данных
+    db = context.bot_data['db']
+    db.add_notification(student.id, 'schedule', text)
+    
+    # Отправляем push-сообщение над меню
+    try:
+        msg = await context.bot.send_message(
+            chat_id=student.telegram_id,
+            text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
+        )
+        db.add_push_message(student.id, msg.message_id)
+        
+        # Обновляем меню с новым счётчиком уведомлений
+        await send_student_menu_by_chat_id(context, student.telegram_id)
+    except Exception:
+        pass
+
+def plan_schedule_reminders_for_student(job_queue, db, student_id, tz_str='Europe/Moscow'):
+    """Планирует напоминания за 15 минут до каждого занятия ученика на ближайшую неделю"""
+    student = db.get_student_by_id(student_id)
+    if not student:
+        return
+    schedules = db.get_student_schedule(student_id)
+    tz = pytz.timezone(tz_str)
+    now = datetime.now(tz)
+    for schedule in schedules:
+        # Определяем дату ближайшего занятия
+        lesson_time = datetime.strptime(schedule.time, '%H:%M').time()
+        # Определяем ближайший день недели
+        days_ahead = (schedule.day_of_week - now.weekday()) % 7
+        lesson_date = (now + timedelta(days=days_ahead)).date()
+        lesson_dt = tz.localize(datetime.combine(lesson_date, lesson_time))
+        # Если занятие уже прошло сегодня, берем на следующей неделе
+        if lesson_dt < now:
+            lesson_dt += timedelta(days=7)
+        # Время напоминания
+        reminder_dt = lesson_dt - timedelta(minutes=15)
+        # Не планируем напоминание в прошлом
+        if reminder_dt < now:
+            continue
+        # Планируем задачу
+        job_queue.run_once(
+            send_schedule_reminder,
+            when=(reminder_dt - now).total_seconds(),
+            data={
+                'student_id': student_id,
+                'schedule': {
+                    'day_of_week': schedule.day_of_week,
+                    'time': schedule.time,
+                    'duration': schedule.duration
+                }
+            },
+            name=f"reminder_{student_id}_{schedule.id}_{reminder_dt.strftime('%Y%m%d%H%M')}"
+        )
+
+async def send_schedule_reminder(context):
+    """Отправляет напоминание о занятии за 15 минут до начала над меню и сохраняет его как push-уведомление, удаляя предыдущие напоминания"""
+    job = context.job
+    student_id = job.data['student_id']
+    schedule = job.data['schedule']
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    if not student or not student.telegram_id:
+        return
+    
+    # Формируем простой текст напоминания
+    text = "⏰ Через 15 минут начинается занятие!"
+    
+    # Добавляем ссылку на подключение, если она есть
+    if student.lesson_link:
+        text += f"\n\n🔗 <a href='{student.lesson_link}'>Подключиться</a>"
+    
+    try:
+        # Удаляем старое меню, если есть
+        last_menu_id = db.get_student_menu_message_id(student.id)
+        if last_menu_id:
+            try:
+                await context.bot.delete_message(chat_id=student.telegram_id, message_id=last_menu_id)
+            except Exception:
+                pass
+        # Удаляем все предыдущие push-напоминания (push_messages)
+        push_msgs = db.get_push_messages(student.id)
+        for push in push_msgs:
+            try:
+                await context.bot.delete_message(chat_id=student.telegram_id, message_id=push.message_id)
+            except Exception:
+                pass
+        db.clear_push_messages(student.id)
+        # Отправляем напоминание
+        msg = await context.bot.send_message(
+            chat_id=student.telegram_id,
+            text=text,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+        db.add_push_message(student.id, msg.message_id)
+        # Отправляем новое меню
+        await send_student_menu_by_chat_id(context, student.telegram_id)
+    except Exception:
+        pass
+
+# Локальная функция для отправки меню студента
+async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    db = context.bot_data['db']
+    student = db.get_student_by_telegram_id(chat_id)
+    if not student:
+        return
+    # Удаляем предыдущее меню, если оно есть
+    last_menu_id = db.get_student_menu_message_id(student.id)
+    if last_menu_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=last_menu_id)
+        except Exception as e:
+            pass
+    unread_count = len(db.get_notifications(student.id, only_unread=True))
+    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    if student.exam_type.value == 'Школьная программа':
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
+            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [
+                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
+                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
+            ],
+            [
+                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+        ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    display_name = student.display_name or student.name
+    greeting = f"👋 Привет, {display_name}!"
+    msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
+    db.update_student_menu_message_id(student.id, msg.message_id)

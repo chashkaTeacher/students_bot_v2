@@ -20,7 +20,7 @@ from handlers.admin_handlers import (
     give_homework_choose_task,
     give_homework_assign,
     give_homework_status_handler,
-    GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK, GIVE_HOMEWORK_STATUS,
+    GIVE_HOMEWORK_CHOOSE_EXAM, GIVE_HOMEWORK_CHOOSE_STUDENT, GIVE_HOMEWORK_CHOOSE_TASK, GIVE_HOMEWORK_STATUS, GIVE_HOMEWORK_MENU,
     handle_give_homework_variant,
     handle_give_variant_choose_exam,
     handle_give_variant_enter_link,
@@ -33,7 +33,11 @@ from handlers.admin_handlers import (
     SCHOOL_HOMEWORK_CHOICE, SCHOOL_HOMEWORK_TITLE, SCHOOL_HOMEWORK_LINK, SCHOOL_HOMEWORK_FILE,
     SCHOOL_NOTE_CHOICE, SCHOOL_NOTE_TITLE, SCHOOL_NOTE_LINK, SCHOOL_NOTE_FILE,
     show_statistics_menu, handle_statistics_exam_choice, handle_statistics_student_choice,
-    STATISTICS_CHOOSE_EXAM, STATISTICS_CHOOSE_STUDENT, EDIT_TASK_STATUS
+    STATISTICS_CHOOSE_EXAM, STATISTICS_CHOOSE_STUDENT, EDIT_TASK_STATUS,
+    handle_schedule_time, handle_schedule_duration,
+    SCHEDULE_CHOOSE_DAY, SCHEDULE_ENTER_TIME, SCHEDULE_ENTER_DURATION,
+    handle_schedule_edit_time,
+    SCHEDULE_EDIT_CHOOSE_PARAM, SCHEDULE_EDIT_DAY, SCHEDULE_EDIT_TIME, SCHEDULE_EDIT_DURATION
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -85,8 +89,9 @@ from handlers.notes_handlers import (
     ASK_FOR_FILE, WAIT_FOR_FILE
 )
 from handlers.common_handlers import handle_start
-from datetime import time, timedelta
+from datetime import time, timedelta, datetime
 import pytz
+import asyncio
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -108,7 +113,6 @@ def main():
 
     # ГЛОБАЛЬНЫЕ обработчики для статистики (ставим до ConversationHandler-ов)
     application.add_handler(CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_page_\\d+$"))
-    application.add_handler(CallbackQueryHandler(show_statistics_menu, pattern="^statistics_back$"))
 
     # Создаем главный обработчик для команды /start и ввода пароля
     main_handler = ConversationHandler(
@@ -337,6 +341,10 @@ def main():
     give_homework_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(give_homework_menu, pattern="^admin_give_homework$")],
         states={
+            GIVE_HOMEWORK_MENU: [
+                CallbackQueryHandler(give_homework_choose_exam, pattern="^admin_give_homework$"),
+                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
+            ],
             GIVE_HOMEWORK_CHOOSE_EXAM: [
                 CallbackQueryHandler(give_homework_choose_student, pattern="^give_hw_exam_(OGE|EGE|SCHOOL)$"),
                 CallbackQueryHandler(admin_menu, pattern="^admin_back$")
@@ -404,10 +412,13 @@ def main():
             ],
             GIVE_VARIANT_ENTER_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_give_variant_enter_link),
-                CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")
+                CallbackQueryHandler(admin_menu, pattern="^admin_back$")
             ]
         },
-        fallbacks=[CallbackQueryHandler(handle_admin_actions, pattern="^admin_give_homework$")],
+        fallbacks=[
+            CallbackQueryHandler(admin_menu, pattern="^admin_back$"),
+            CallbackQueryHandler(admin_menu, pattern="^admin_give_homework$")
+        ],
         name="give_variant",
         persistent=False
     )
@@ -425,11 +436,75 @@ def main():
                 CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_student_\\d+$"),
                 CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_page_\\d+$"),
                 CallbackQueryHandler(handle_statistics_exam_choice, pattern="^statistics_exam_back$"),
-                CallbackQueryHandler(admin_menu, pattern="^statistics_back$")
+                CallbackQueryHandler(show_statistics_menu, pattern="^statistics_back$")
             ]
         },
         fallbacks=[CallbackQueryHandler(admin_menu, pattern="^admin_back$")],
         name="statistics",
+        persistent=False
+    )
+
+    # ConversationHandler для расписания
+    schedule_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(handle_admin_actions, pattern="^schedule_(add|view|edit|delete)_student_\\d+$")
+        ],
+        states={
+            SCHEDULE_CHOOSE_DAY: [
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_day_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_delete_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_edit_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ],
+            SCHEDULE_ENTER_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_time),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_delete_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_edit_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ],
+            SCHEDULE_ENTER_DURATION: [
+                CallbackQueryHandler(handle_schedule_duration, pattern="^schedule_duration_\\d+$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_duration),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_delete_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^schedule_edit_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ],
+            SCHEDULE_EDIT_DAY: [
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ],
+            SCHEDULE_EDIT_TIME: [
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_schedule_edit_time),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ],
+            SCHEDULE_EDIT_DURATION: [
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_day$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_time$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^edit_schedule_duration_\\d+$"),
+                CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(handle_admin_actions, pattern="^admin_back$")
+        ],
+        name="schedule",
         persistent=False
     )
 
@@ -443,30 +518,13 @@ def main():
     application.add_handler(give_homework_handler)
     application.add_handler(give_variant_handler)
     application.add_handler(statistics_handler)
+    application.add_handler(schedule_handler)
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("admin", admin_menu))
-    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_).*$"))
+    application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_|schedule_exam_).*$"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^roadmap_page_"))  # Обработчик навигации роадмапа
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))  # Общий обработчик студента
-    
-    async def daily_unread_notifications(context: ContextTypes.DEFAULT_TYPE):
-        db = context.bot_data['db']
-        students = db.get_all_students()
-        for student in students:
-            if student.telegram_id and db.has_unread_notifications(student.id):
-                try:
-                    await context.bot.send_message(
-                        chat_id=student.telegram_id,
-                        text="🔔 У вас есть непрочитанные уведомления! Откройте меню 'Уведомления'."
-                    )
-                except Exception as e:
-                    pass
-
-    # Запускаем ежедневный job в 14:00 по Москве
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    job_queue = application.job_queue
-    job_queue.run_daily(daily_unread_notifications, time=time(hour=14, minute=0, tzinfo=moscow_tz))
     
     # Запускаем бота
     application.run_polling()
