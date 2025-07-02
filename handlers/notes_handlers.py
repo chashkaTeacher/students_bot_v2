@@ -78,9 +78,9 @@ async def show_exam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, act
     keyboard = [
         [
             InlineKeyboardButton("📝 ОГЭ", callback_data="notes_exam_OGE"),
-            InlineKeyboardButton("📚 ЕГЭ", callback_data="notes_exam_EGE")
+            InlineKeyboardButton("🎓 ЕГЭ", callback_data="notes_exam_EGE"),
+            InlineKeyboardButton("📖 Школьная программа", callback_data="notes_exam_SCHOOL")
         ],
-        [InlineKeyboardButton("🏫 Школьная программа", callback_data="notes_exam_SCHOOL")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)

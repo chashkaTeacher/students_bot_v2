@@ -7,6 +7,7 @@ import datetime
 import pytz
 from datetime import timedelta
 from telegram.error import BadRequest
+from handlers.common_handlers import handle_start
 
 # Состояния для ConversationHandler
 ENTER_PASSWORD = 0
@@ -21,54 +22,315 @@ EDIT_LINK = 1001
 
 RESCHEDULE_CHOOSE_LESSON, RESCHEDULE_CHOOSE_WEEK, RESCHEDULE_CHOOSE_DAY, RESCHEDULE_CHOOSE_TIME, RESCHEDULE_CONFIRM = range(5)
 
-async def get_user_settings(user_id: int) -> dict:
-    """Получает настройки пользователя или возвращает настройки по умолчанию"""
-    if user_id not in user_settings:
-        user_settings[user_id] = {
-            "display_name": None,
-            "greeting": None
-        }
-    return user_settings[user_id]
+# Добавим универсальные словари для вложенных меню
+student_menu_labels = {
+    'back': {
+        'classic': ('🔙', 'Назад'),
+        'dark': ('🌑', 'Назад'),
+        'cheese': ('🧀', 'Назад'),
+        'cyber': ('⚡', 'Назад'),
+        'games': ('🎮', 'Назад в лобби'),
+        'anime': ('🍵', 'Назад в меню'),
+        'jojo': ('🕺', 'Назад (Muda Muda)'),
+    },
+    'homework': {
+        'classic': ('📚', 'Домашнее задание'),
+        'dark': ('🛠', 'Задание из Тени'),
+        'cheese': ('🧀', 'Задание на погрыз'),
+        'cyber': ('🖥', 'КОД: Домашка'),
+        'games': ('🎮', 'Журнал заданий'),
+        'anime': ('🗾', '1000 лет боли в виде задач'),
+        'jojo': ('☀️', 'Путь Хамона'),
+    },
+    'lesson': {
+        'classic': ('🔗', 'Подключиться к занятию'),
+        'dark': ('👁', 'Спиритический сеанс'),
+        'cheese': ('🐾', 'Прыгнуть в урок'),
+        'cyber': ('🛰', 'Подключиться [LIVE]'),
+        'games': ('🕹', 'Зарегать катку'),
+        'anime': ('📞', 'Звонок сенсею'),
+        'jojo': ('🌈', 'Начать бизарное приключение'),
+    },
+    'notes': {
+        'classic': ('📝', 'Конспекты'),
+        'dark': ('📜', 'Свитки Знаний'),
+        'cheese': ('💜', 'Шпаргалки'),
+        'cyber': ('📁', 'Логи'),
+        'games': ('📖', 'Лороведение'),
+        'anime': ('📓', 'Хроники'),
+        'jojo': ('📖', "Heaven's Door"),
+    },
+    'roadmap': {
+        'classic': ('🗺️', 'Роадмап'),
+        'dark': ('❄️', 'Шаги во Тьме'),
+        'cheese': ('🧀', 'Сырная тропа'),
+        'cyber': ('🛰', 'Протокол курса'),
+        'games': ('💎', 'Гринд'),
+        'anime': ('🗺️', 'Путь героя'),
+        'jojo': ('⏳', 'To Be Continued'),
+    },
+    'schedule': {
+        'classic': ('📅', 'Расписание'),
+        'dark': ('⏳', 'Часы Судьбы'),
+        'cheese': ('📅', 'Сырисание'),
+        'cyber': ('⏱', 'Таймлайн'),
+        'games': ('🎲', 'Ивенты'),
+        'anime': ('🍵', 'Учёба и чай'),
+        'jojo': ('🕰', 'Made in Heaven'),
+    },
+    'settings': {
+        'classic': ('⚙️', 'Настройки'),
+        'dark': ('🛡', 'Глубины Системы'),
+        'cheese': ('🐱', 'Панель мышления'),
+        'cyber': ('⚙️', 'Система ⚡'),
+        'games': ('🛠', 'Меню билдов'),
+        'anime': ('🤖', 'Меню Пилота EVA'),
+        'jojo': ('🏢', 'Штаб фонда Спидвагона'),
+    },
+    'notifications': {
+        'classic': ('🔔', 'Уведомления'),
+        'dark': ('🧃', 'Зов Бездны'),
+        'cheese': ('🧀', 'Пищалки'),
+        'cyber': ('⚡', 'Сигналы'),
+        'games': ('📜', 'Квесты'),
+        'anime': ('😺', 'Ня!'),
+        'jojo': ('💥', 'ORA! Alerts'),
+    },
+}
 
+# Единый источник тем и названий для всех меню
+THEME_EMOJIS = {
+    "classic": {"homework": "📚", "lesson": "🔗", "notes": "📝", "schedule": "📅", "settings": "⚙️", "roadmap": "🗺️", "notifications": "🔔"},
+    "dark": {"homework": "🛠", "lesson": "👁", "notes": "📜", "schedule": "⏳", "settings": "🛡", "roadmap": "❄️", "notifications": "🧃"},
+    "cheese": {"homework": "🧀", "lesson": "🐾", "notes": "💜", "schedule": "📅", "settings": "🐱", "roadmap": "🧀", "notifications": "🧀"},
+    "cyber": {"homework": "🖥", "lesson": "🛰", "notes": "📁", "schedule": "⏱", "settings": "⚙️", "roadmap": "🛰", "notifications": "⚡"}
+}
+THEME_NAMES = {
+    "classic": {
+        "homework": "Домашнее задание",
+        "lesson": "Подключиться к занятию", 
+        "notes": "Конспекты",
+        "schedule": "Расписание",
+        "settings": "Настройки",
+        "roadmap": "Роадмап",
+        "notifications": "Уведомления"
+    },
+    "dark": {
+        "homework": "Задание из Тени",
+        "lesson": "Спиритический сеанс",
+        "notes": "Свитки Знаний", 
+        "schedule": "Часы Судьбы",
+        "settings": "Глубины Системы",
+        "roadmap": "Шаги во Тьме",
+        "notifications": "Зов Бездны"
+    },
+    "cheese": {
+        "homework": "Задание на погрыз",
+        "lesson": "Прыгнуть в урок",
+        "notes": "Шпаргалки",
+        "schedule": "Сырисание", 
+        "settings": "Панель мышления",
+        "roadmap": "Сырная тропа",
+        "notifications": "Пищалки"
+    },
+    "cyber": {
+        "homework": "КОД: Домашка",
+        "lesson": "Подключиться [LIVE]",
+        "notes": "Логи",
+        "schedule": "Таймлайн",
+        "settings": "Система ⚡",
+        "roadmap": "Протокол курса",
+        "notifications": "Сигналы"
+    },
+    "games": {
+        "homework": "Журнал заданий",
+        "lesson": "Зарегать катку",
+        "notes": "Лороведение",
+        "schedule": "Ивенты",
+        "settings": "Меню билдов",
+        "roadmap": "Гринд",
+        "notifications": "Квесты"
+    },
+    "anime": {
+        "homework": "1000 лет боли в виде задач",
+        "lesson": "Звонок сенсею",
+        "notes": "Хроники",
+        "schedule": "Учёба и чай",
+        "settings": "Меню Пилота EVA",
+        "roadmap": "Путь героя",
+        "notifications": "Ня!"
+    },
+    "jojo": {
+        "homework": "Путь Хамона",
+        "lesson": "Начать бизарное приключение",
+        "notes": "Heaven's Door",
+        "schedule": "Made in Heaven",
+        "settings": "Штаб фонда Спидвагона",
+        "roadmap": "To Be Continued",
+        "notifications": "ORA! Alerts"
+    }
+}
+THEME_AVATAR_NAMES = {
+    "classic": {"title": "Выберите аватарку:", "back": "Назад"},
+    "dark": {"title": "Выберите аватар:", "back": "Назад"},
+    "cheese": {"title": "Выберите сырную аватарку:", "back": "Назад"},
+    "cyber": {"title": "Выберите аватар профиля:", "back": "Назад"}
+}
+THEME_THEME_NAMES = {
+    "classic": {"title": "Выберите тему оформления:", "back": "Назад"},
+    "dark": {"title": "Выберите стиль оформления:", "back": "Назад"},
+    "cheese": {"title": "Выберите сырную тему:", "back": "Назад"},
+    "cyber": {"title": "Выберите конфигурацию интерфейса:", "back": "Назад"},
+    "games": {"title": "Выберите геймерскую тему:", "back": "Назад в лобби"},
+    "anime": {"title": "Выберите аниме-тему:", "back": "Назад в меню"},
+    "jojo": {"title": "Выберите Jojo-тему:", "back": "Назад (Muda Muda)"},
+}
+
+THEME_SETTINGS_NAMES = {
+    "classic": {
+        "personalization": "Персонализация",
+        "old_homework_show": "Показывать старые задания",
+        "old_homework_hide": "Скрыть старые задания",
+        "feedback": "Фидбек",
+        "reset": "Сбросить настройки",
+        "back": "Назад",
+        "title": "Настройки"
+    },
+    "dark": {
+        "personalization": "Кастомизация",
+        "old_homework_show": "Отображать архив",
+        "old_homework_hide": "Скрыть архив",
+        "feedback": "Обратная связь",
+        "reset": "Сброс параметров",
+        "back": "Назад",
+        "title": "Параметры"
+    },
+    "cheese": {
+        "personalization": "Сырная персонализация",
+        "old_homework_show": "Показывать старые сыры",
+        "old_homework_hide": "Скрыть старые сыры",
+        "feedback": "Сырный фидбек",
+        "reset": "Сбросить сырные настройки",
+        "back": "Назад",
+        "title": "Сырные настройки"
+    },
+    "cyber": {
+        "personalization": "Конфигурация профиля",
+        "old_homework_show": "Отображать архивные данные",
+        "old_homework_hide": "Скрыть архивные данные",
+        "feedback": "Отчет об ошибках",
+        "reset": "Сброс конфигурации",
+        "back": "Назад",
+        "title": "Конфигурация"
+    }
+}
+
+THEME_PERSONALIZATION_NAMES = {
+    "classic": {
+        "change_name": "Изменить имя",
+        "choose_avatar": "Выбрать аватарку",
+        "choose_theme": "Сменить тему",
+        "back": "Назад",
+        "title": "Персонализация"
+    },
+    "dark": {
+        "change_name": "Изменить никнейм",
+        "choose_avatar": "Выбрать аватар",
+        "choose_theme": "Сменить стиль",
+        "back": "Назад",
+        "title": "Кастомизация"
+    },
+    "cheese": {
+        "change_name": "Изменить сырное имя",
+        "choose_avatar": "Выбрать сырную аватарку",
+        "choose_theme": "Сменить сырную тему",
+        "back": "Назад",
+        "title": "Сырная персонализация"
+    },
+    "cyber": {
+        "change_name": "Изменить идентификатор",
+        "choose_avatar": "Выбрать аватар профиля",
+        "choose_theme": "Сменить конфигурацию",
+        "back": "Назад",
+        "title": "Конфигурация профиля"
+    }
+}
+
+# Функция для получения тематизированной кнопки
+def themed_button(label_key, theme, callback_data):
+    emoji, text = student_menu_labels[label_key][theme]
+    return InlineKeyboardButton(f"{emoji} {text}", callback_data=callback_data)
+
+def require_student(func):
+    async def wrapper(update, context, *args, **kwargs):
+        db = context.bot_data['db']
+        user_id = update.effective_user.id
+        student = db.get_student_by_telegram_id(user_id)
+        if not student:
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(
+                    text="❌ Ваш аккаунт был удалён или не найден."
+                )
+            else:
+                await update.message.reply_text("❌ Ваш аккаунт был удалён или не найден.")
+            # ЛЕНИВЫЙ ИМПОРТ, чтобы избежать циклического импорта
+            await handle_start(update, context)
+            return ConversationHandler.END
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+# Применяем декоратор к основным обработчикам меню ученика
+@require_student
 async def student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает меню студента"""
     user_id = update.effective_user.id
     student = context.bot_data['db'].get_student_by_telegram_id(user_id)
     db = context.bot_data['db']
     unread_count = len(db.get_notifications(student.id, only_unread=True)) if student else 0
-    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
-    
-    if student.exam_type.value == 'Школьная программа':
-        keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
-            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
-            [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
-                InlineKeyboardButton(notif_text, callback_data="student_notifications")
-            ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
-            [
-                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
-                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
-            ],
-            [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
-                InlineKeyboardButton(notif_text, callback_data="student_notifications")
-            ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
-        ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Используем отображаемое имя из базы данных
     display_name = student.display_name or student.name
-    greeting = f"👋 Привет, {display_name}!"
+    
+    # Применяем аватарку и тему
+    avatar_emoji = student.avatar_emoji or "👋"
+    greeting = f"{avatar_emoji} Привет, {display_name}!"
+    
+    # Применяем тему к эмодзи в меню
+    theme = student.theme or "classic"
+    
+    emojis = THEME_EMOJIS.get(theme, THEME_EMOJIS["classic"])
+    names = THEME_NAMES.get(theme, THEME_NAMES["classic"])
+    
+    notif_text = f"{emojis['notifications']} {names['notifications']} ({unread_count})" if unread_count else f"{emojis['notifications']} {names['notifications']}"
+    
+    if student.exam_type.value == 'Школьная программа':
+        keyboard = [
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
+            [InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes")],
+            [
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework_menu")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
+            [
+                InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes"),
+                InlineKeyboardButton(f"{emojis['roadmap']} {names['roadmap']}", callback_data="student_roadmap")
+            ],
+            [
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
+                InlineKeyboardButton(notif_text, callback_data="student_notifications")
+            ],
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
         try:
@@ -89,30 +351,50 @@ async def student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         db.update_student_menu_message_id(student.id, msg.message_id)
 
+@require_student
 async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает меню настроек"""
     user_id = update.effective_user.id
     student = context.bot_data['db'].get_student_by_telegram_id(user_id)
     
-    # Определяем текст кнопки в зависимости от текущей настройки
-    show_old_text = "👁️ Скрыть старые задания" if student.show_old_homework else "👁️ Показывать старые задания"
+    # Применяем тему к названиям кнопок
+    theme = student.theme or "classic"
+    names = THEME_SETTINGS_NAMES.get(theme, THEME_SETTINGS_NAMES["classic"])
+    show_old_text = f"👁️ {names['old_homework_hide']}" if student.show_old_homework else f"👁️ {names['old_homework_show']}"
     
     keyboard = [
-        [
-            InlineKeyboardButton("👤 Изменить отображаемое имя", callback_data="student_change_name")
-        ],
-        [
-            InlineKeyboardButton(show_old_text, callback_data="student_toggle_old_homework")
-        ],
-        [
-            InlineKeyboardButton("🔄 Сбросить настройки", callback_data="student_reset_settings")
-        ],
-        [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
+        [InlineKeyboardButton(f"🎨 {names['personalization']}", callback_data="student_personalization")],
+        [InlineKeyboardButton(show_old_text, callback_data="student_toggle_old_homework")],
+        [InlineKeyboardButton(f"📝 {names['feedback']}", callback_data="student_feedback")],
+        [InlineKeyboardButton(f"🔄 {names['reset']}", callback_data="student_reset_settings")],
+        [InlineKeyboardButton(f"🔙 {names['back']}", callback_data="student_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.callback_query.edit_message_text(
-        text="⚙️ Настройки\nВыберите, что хотите изменить:",
+        text=f"⚙️ {names['title']}\nВыберите, что хотите изменить:",
+        reply_markup=reply_markup
+    )
+
+@require_student
+async def show_personalization_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает подменю персонализации"""
+    user_id = update.effective_user.id
+    student = context.bot_data['db'].get_student_by_telegram_id(user_id)
+    
+    # Применяем тему к названиям кнопок
+    theme = student.theme or "classic"
+    names = THEME_PERSONALIZATION_NAMES.get(theme, THEME_PERSONALIZATION_NAMES["classic"])
+    
+    keyboard = [
+        [InlineKeyboardButton(f"👤 {names['change_name']}", callback_data="student_change_name")],
+        [InlineKeyboardButton(f"🦊 {names['choose_avatar']}", callback_data="student_choose_avatar")],
+        [InlineKeyboardButton(f"🌈 {names['choose_theme']}", callback_data="student_choose_theme")],
+        [InlineKeyboardButton(f"🔙 {names['back']}", callback_data="student_settings")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text(
+        text=f"🎨 {names['title']}\nВыберите, что хотите изменить:",
         reply_markup=reply_markup
     )
 
@@ -127,8 +409,9 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if student:
         # Обновляем Telegram ID студента
         db.update_student_telegram_id(student.id, user_id)
-        
-        # Показываем меню студента
+        # Получаем студента заново, чтобы декоратор увидел его
+        student = db.get_student_by_telegram_id(user_id)
+        from handlers.student_handlers import student_menu
         await student_menu(update, context)
         return ConversationHandler.END
     else:
@@ -137,20 +420,62 @@ async def handle_password(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return ENTER_PASSWORD
 
+@require_student
 async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None | int:
-    """Обрабатывает действия студента"""
     query = update.callback_query
-    
+    if query.data == "student_feedback":
+        msg = await query.edit_message_text(
+            "✉️ Напишите ваше пожелание, замечание или баг одним сообщением.\n\nЕсли не хотите отправлять сообщение, нажмите 'Назад'.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="student_settings")]
+            ])
+        )
+        context.user_data['awaiting_feedback'] = True
+        context.user_data['feedback_menu_msg_id'] = msg.message_id
+        return
     try:
         await query.answer()
     except Exception as e:
         pass
-    
     db: Database = context.bot_data['db']
     user_id = query.from_user.id
     student = db.get_student_by_telegram_id(user_id)
     
-    if query.data == "student_homework":
+
+
+    if query.data == "student_personalization":
+        await show_personalization_menu(update, context)
+        return
+    elif query.data == "student_choose_avatar":
+        await show_avatar_menu(update, context)
+        return
+    elif query.data == "student_choose_theme":
+        await show_theme_menu(update, context)
+        return
+    elif query.data.startswith("set_avatar_"):
+        emoji = query.data.replace("set_avatar_", "")
+        db.set_student_avatar(student.id, emoji)
+        await query.edit_message_text(
+            f"Аватарка {emoji} успешно выбрана!", 
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Персонализация", callback_data="student_personalization")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="student_back")]
+            ])
+        )
+        return
+    elif query.data.startswith("set_theme_"):
+        theme = query.data.replace("set_theme_", "")
+        db.set_student_theme(student.id, theme)
+        theme_names = THEME_THEME_NAMES.get(theme, THEME_THEME_NAMES["classic"])
+        await query.edit_message_text(
+            f"Тема оформления {theme_names.get('title', theme)} успешно выбрана!", 
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Персонализация", callback_data="student_personalization")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="student_back")]
+            ])
+        )
+        return
+    elif query.data == "student_homework":
         await show_student_homework_menu(update, context, student, page=int(context.user_data.get('homework_page', 0)))
         return
     elif query.data.startswith("student_hw_file_"):
@@ -217,7 +542,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             is_current = homeworks_data[-1][0].id == hw_id
         
         # Статус задания
-        status_text = "🆕 Актуальное задание" if is_current else "📚 Пройденное задание"
+        status_text = "🆕 Актуальное задание" if is_current else "�� Пройденное задание"
         
         message_text = (
             f"{emoji} <b>{hw.title}</b>\n"
@@ -765,6 +1090,7 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
+@require_student
 async def handle_display_name_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает изменение отображаемого имени"""
     user_id = update.effective_user.id
@@ -787,6 +1113,7 @@ async def handle_display_name_change(update: Update, context: ContextTypes.DEFAU
     
     return ConversationHandler.END
 
+@require_student
 async def show_student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показывает меню управления учениками"""
     query = update.callback_query
@@ -803,6 +1130,7 @@ async def show_student_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
 
+@require_student
 async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     
@@ -822,6 +1150,7 @@ async def handle_student_selection(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
         ]
 
+@require_student
 async def handle_student_edit_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает выбор действия при редактировании"""
     query = update.callback_query
@@ -862,6 +1191,7 @@ async def handle_student_edit_action(update: Update, context: ContextTypes.DEFAU
         )
         return EDIT_NAME
 
+@require_student
 async def handle_student_link_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает изменение ссылки ученика"""
     user_id = update.effective_user.id
@@ -902,6 +1232,7 @@ async def handle_student_link_edit(update: Update, context: ContextTypes.DEFAULT
     )
     return ConversationHandler.END 
 
+@require_student
 async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
     db = context.bot_data['db']
     student = db.get_student_by_telegram_id(chat_id)
@@ -912,48 +1243,54 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
     if last_menu_id:
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=last_menu_id)
-        except Exception as e:
+        except Exception:
             pass
     unread_count = len(db.get_notifications(student.id, only_unread=True))
-    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    display_name = student.display_name or student.name
+    avatar_emoji = student.avatar_emoji or "👋"
+    greeting = f"{avatar_emoji} Привет, {display_name}!"
+    theme = student.theme or "classic"
+    emojis = THEME_EMOJIS.get(theme, THEME_EMOJIS["classic"])
+    names = THEME_NAMES.get(theme, THEME_NAMES["classic"])
+    notif_text = f"{emojis['notifications']} {names['notifications']} ({unread_count})" if unread_count else f"{emojis['notifications']} {names['notifications']}"
     if student.exam_type.value == 'Школьная программа':
         keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
-            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
+            [InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes")],
             [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
                 InlineKeyboardButton(notif_text, callback_data="student_notifications")
             ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework_menu")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
             [
-                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
-                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
+                InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes"),
+                InlineKeyboardButton(f"{emojis['roadmap']} {names['roadmap']}", callback_data="student_roadmap")
             ],
             [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
                 InlineKeyboardButton(notif_text, callback_data="student_notifications")
             ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
         ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    display_name = student.display_name or student.name
-    greeting = f"👋 Привет, {display_name}!"
     msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
     db.update_student_menu_message_id(student.id, msg.message_id)
 
+@require_student
 async def show_student_notes_menu(update, context, student, page=0):
     db = context.bot_data['db']
+    theme = student.theme or 'classic'
     student_notes = db.get_notes_for_student(student.id)
     if not student_notes:
         await update.callback_query.edit_message_text(
-            text="📝 У вас пока нет выданных конспектов.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+            text=f"{student_menu_labels['notes'][theme][0]} У вас пока нет выданных конспектов.",
+            reply_markup=InlineKeyboardMarkup([[themed_button('back', theme, 'student_back')]])
         )
         return
     per_page = 6  # 3 строки по 2 конспекта
@@ -991,8 +1328,8 @@ async def show_student_notes_menu(update, context, student, page=0):
         nav_row.append(InlineKeyboardButton("▶️", callback_data="student_notes_next"))
     if len(nav_row) > 1:
         keyboard.append(nav_row)
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
-    header = f"📚 <b>Ваши конспекты</b>\n"
+    keyboard.append([themed_button('back', theme, 'student_back')])
+    header = f"{student_menu_labels['notes'][theme][0]} <b>Ваши {student_menu_labels['notes'][theme][1].lower()}</b>\n"
     header += "─────────────\n"
     try:
         await update.callback_query.edit_message_text(
@@ -1004,32 +1341,26 @@ async def show_student_notes_menu(update, context, student, page=0):
         if "Message is not modified" not in str(e):
             raise
 
+@require_student
 async def show_student_homework_menu(update, context, student, page=0):
-    """Показывает меню домашних заданий ученика с пагинацией"""
     db = context.bot_data['db']
     homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
-    
     if not homeworks_data:
         await update.callback_query.edit_message_text(
-            text="📚 У вас пока нет выданных домашних заданий.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_back")]])
+            text=f"{student_menu_labels['homework'][student.theme or 'classic'][0]} У вас пока нет выданных домашних заданий.",
+            reply_markup=InlineKeyboardMarkup([[themed_button('back', student.theme or 'classic', 'student_back')]])
         )
         return
-    
     # Если показ старых заданий отключен и есть больше одного задания, показываем только актуальное
     if not student.show_old_homework and len(homeworks_data) > 1:
         homeworks_data = [homeworks_data[-1]]  # Только последнее (актуальное) задание
-    
     # Определяем актуальное задание
     all_homeworks = db.get_homeworks_for_student_with_filter(student.id)
     current_homework_id = all_homeworks[-1][0].id if all_homeworks else None
-    
     # Отделяем старые задания от актуального
     old_homeworks = [hw for hw, _ in homeworks_data if hw.id != current_homework_id]
     current_homework = next((hw for hw, _ in homeworks_data if hw.id == current_homework_id), None)
-    
     keyboard = []
-    
     # Показываем старые задания только если они есть и включен показ старых заданий
     if old_homeworks and student.show_old_homework:
         per_page = 4  # 4 старых задания на страницу
@@ -1037,11 +1368,9 @@ async def show_student_homework_menu(update, context, student, page=0):
         max_page = (total_old + per_page - 1) // per_page - 1 if total_old > 0 else 0
         page = max(0, min(page, max_page))
         context.user_data['homework_page'] = page
-        
         start = page * per_page
         end = start + per_page
         old_on_page = old_homeworks[start:end]
-        
         # Старые задания по 2 в строке
         for i in range(0, len(old_on_page), 2):
             row = []
@@ -1053,7 +1382,6 @@ async def show_student_homework_menu(update, context, student, page=0):
                     row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
             if row:
                 keyboard.append(row)
-        
         # Кнопки навигации только если есть старые задания
         nav_buttons = []
         if page > 0:
@@ -1063,28 +1391,26 @@ async def show_student_homework_menu(update, context, student, page=0):
             nav_buttons.append(InlineKeyboardButton("▶️", callback_data="student_homework_next"))
         if nav_buttons:
             keyboard.append(nav_buttons)
-    
     # Актуальное задание всегда внизу
     if current_homework:
         short_title = current_homework.title[:40] + ('…' if len(current_homework.title) > 40 else '')
         keyboard.append([InlineKeyboardButton(f"🆕 {short_title}", callback_data=f"student_hw_{current_homework.id}")])
-    
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
-    
     # Формируем заголовок
     header = f"📚 <b>Ваши домашние задания</b>\n"
     if not student.show_old_homework and len(db.get_homeworks_for_student_with_filter(student.id)) > 1:
         header += "ℹ️ Показано только актуальное задание\n"
     header += "─────────────\n"
-    
     await update.callback_query.edit_message_text(
         text=header,
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
 
+@require_student
 async def show_student_roadmap(update, context, student, page=0):
     db = context.bot_data['db']
+    theme = student.theme or 'classic'
     exam_type = student.exam_type
     exam_label = 'ЕГЭ' if exam_type.value == 'ЕГЭ' else 'ОГЭ'
     
@@ -1266,7 +1592,7 @@ async def show_student_roadmap(update, context, student, page=0):
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    keyboard.append([themed_button('back', theme, 'student_back')])
     
     await update.callback_query.edit_message_text(
         text=progress_text,
@@ -1276,6 +1602,7 @@ async def show_student_roadmap(update, context, student, page=0):
     ) 
 
 # --- Новый обработчик старта переноса ---
+@require_student
 async def student_reschedule_start(update, context):
     query = update.callback_query
     await query.answer()
@@ -1296,6 +1623,7 @@ async def student_reschedule_start(update, context):
     )
     return RESCHEDULE_CHOOSE_WEEK
 
+@require_student
 async def student_reschedule_choose_week(update, context):
     query = update.callback_query
     await query.answer()
@@ -1340,6 +1668,7 @@ async def student_reschedule_choose_week(update, context):
     )
     return RESCHEDULE_CHOOSE_DAY
 
+@require_student
 async def student_reschedule_choose_day(update, context):
     query = update.callback_query
     await query.answer()
@@ -1402,6 +1731,7 @@ async def student_reschedule_choose_day(update, context):
     )
     return RESCHEDULE_CHOOSE_TIME
 
+@require_student
 async def student_reschedule_choose_time(update, context):
     query = update.callback_query
     await query.answer()
@@ -1539,6 +1869,7 @@ async def student_reschedule_choose_time(update, context):
     )
     return RESCHEDULE_CONFIRM
 
+@require_student
 async def student_reschedule_confirm(update, context):
     query = update.callback_query
     await query.answer()
@@ -1619,10 +1950,12 @@ async def student_reschedule_confirm(update, context):
         return ConversationHandler.END
     return ConversationHandler.END
 
+@require_student
 async def student_reschedule_send(update, context):
     # Эта функция больше не используется, логика перенесена в student_reschedule_confirm
     pass
 
+@require_student
 async def student_reschedule_menu(update, context):
     """Показывает меню переносов занятий"""
     query = update.callback_query
@@ -1674,6 +2007,7 @@ async def student_reschedule_menu(update, context):
     )
     return RESCHEDULE_CHOOSE_LESSON
 
+@require_student
 async def show_student_schedule_menu(update, context, student=None):
     """
     Показывает меню расписания ученика.
@@ -1708,6 +2042,7 @@ async def show_student_schedule_menu(update, context, student=None):
         )
         return
     days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    theme = student.theme or 'classic'
     schedule_text = "📅 <b>Ваше расписание</b>\n\n"
     for schedule in schedules:
         day_name = days[schedule.day_of_week]
@@ -1719,11 +2054,128 @@ async def show_student_schedule_menu(update, context, student=None):
         schedule_text += f"⏰ Время: {next_lesson['time']}\n"
         schedule_text += f"⏱️ Длительность: {next_lesson['duration']} минут"
     buttons = [
-        [InlineKeyboardButton("🔄 Перенести занятие", callback_data="student_reschedule")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="student_back")]
+        [InlineKeyboardButton(f"🔄 Перенести занятие", callback_data="student_reschedule")],
+        [themed_button('back', theme, 'student_back')]
     ]
     await query.edit_message_text(
         text=schedule_text,
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode=ParseMode.HTML
     )
+
+@require_student
+async def show_avatar_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает меню выбора аватарки"""
+    user_id = update.effective_user.id
+    student = context.bot_data['db'].get_student_by_telegram_id(user_id)
+    
+    # Применяем тему к названиям
+    theme = student.theme or "classic"
+    names = THEME_AVATAR_NAMES.get(theme, THEME_AVATAR_NAMES["classic"])
+    
+    emoji_list = ["🦊", "🐼", "🦉", "🐧", "🦁", "🐸", "🐻", "🐨", "🐯", "🐰", "🦄", "🐙", "🐢", "🐥", "🦋"]
+    keyboard = []
+    row = []
+    for i, emoji in enumerate(emoji_list, 1):
+        row.append(InlineKeyboardButton(emoji, callback_data=f"set_avatar_{emoji}"))
+        if i % 5 == 0:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(f"🔙 {names['back']}", callback_data="student_personalization")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text(
+        text=f"🦊 {names['title']}",
+        reply_markup=reply_markup
+    )
+
+@require_student
+async def show_theme_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает меню выбора темы"""
+    user_id = update.effective_user.id
+    student = context.bot_data['db'].get_student_by_telegram_id(user_id)
+    theme = student.theme or "classic"
+    names = THEME_THEME_NAMES.get(theme, THEME_THEME_NAMES["classic"])
+    themes = [
+        ("🌞 Классика", "classic"),
+        ("🌚 Тёмная", "dark"),
+        ("🧀 Сырная", "cheese"),
+        ("🤖 Киберпанк", "cyber"),
+        ("🎮 Игры", "games"),
+        ("🗾 Аниме", "anime"),
+        ("🕺 Jojo", "jojo"),
+    ]
+    keyboard = []
+    row = []
+    for i, (name, code) in enumerate(themes, 1):
+        row.append(InlineKeyboardButton(name, callback_data=f"set_theme_{code}"))
+        if i % 2 == 0:  # Каждые 2 кнопки - новый ряд
+            keyboard.append(row)
+            row = []
+    if row:  # Если остались кнопки в неполном ряду
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(f"🔙 {names['back']}", callback_data="student_personalization")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text(
+        text=f"🌈 {names['title']}",
+        reply_markup=reply_markup
+    )
+
+@require_student
+async def handle_student_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает ввод фидбека"""
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text(
+        "✉️ Напишите ваше пожелание, замечание или баг одним сообщением.\n\nЕсли не хотите отправлять сообщение, нажмите 'Назад'.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Назад", callback_data="student_settings")]
+        ])
+    )
+    # Сохраняем флаг ожидания фидбека
+    context.user_data['awaiting_feedback'] = True
+    return
+
+@require_student
+async def handle_student_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.get('awaiting_feedback'):
+        db = context.bot_data['db']
+        student = db.get_student_by_telegram_id(update.effective_user.id)
+        feedback = update.message.text
+        # Получаем id админа (или список)
+        admin_ids = db.get_admin_ids() if hasattr(db, 'get_admin_ids') else [db.get_admin_telegram_id()]
+        for admin_id in admin_ids:
+            admin = db.get_admin_by_telegram_id(admin_id) if hasattr(db, 'get_admin_by_telegram_id') else None
+            if admin:
+                notif_text = f"Фидбек от {student.name}:\n\n{feedback}"
+                db.add_admin_notification(admin.id, 'feedback', notif_text)
+                # Push-уведомление админу
+                try:
+                    msg = await context.bot.send_message(
+                        chat_id=admin_id,
+                        text="🔔 У вас новое уведомление! Откройте меню 'Уведомления'."
+                    )
+                    db.add_admin_push_message(admin.id, msg.message_id)
+                    # Обновляем меню администратора под push-уведомлением
+                    from handlers.admin_handlers import send_admin_menu_by_chat_id
+                    await send_admin_menu_by_chat_id(context, admin_id)
+                except Exception:
+                    pass
+        # Удаляем старое меню, если оно есть
+        msg_id = context.user_data.pop('feedback_menu_msg_id', None)
+        if msg_id:
+            try:
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_id)
+            except Exception:
+                pass
+        await update.message.reply_text(
+            "Спасибо за ваш фидбек! Он отправлен администратору.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 В меню настроек", callback_data="student_settings")]
+            ])
+        )
+        context.user_data['awaiting_feedback'] = False
+        return
+    # Если не ждем фидбека, ничего не делаем или обработка других текстов

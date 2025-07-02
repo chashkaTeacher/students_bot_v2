@@ -94,6 +94,8 @@ class Student(Base):
     display_name = Column(String, nullable=True)
     show_old_homework = Column(Boolean, default=False)  # Показывать ли старые домашние задания
     last_menu_message_id = Column(Integer, nullable=True)  # ID последнего сообщения с меню
+    avatar_emoji = Column(String, nullable=True)  # Эмодзи-аватарка
+    theme = Column(String, nullable=True)  # Тема оформления
 
 class Homework(Base):
     __tablename__ = 'homework'
@@ -484,6 +486,8 @@ class Database:
             if student:
                 student.display_name = None
                 student.show_old_homework = False
+                student.avatar_emoji = None
+                student.theme = None
                 session.commit()
         finally:
             session.close()
@@ -1625,6 +1629,28 @@ class Database:
             admin = session.query(Admin).filter_by(id=admin_id).first()
             if admin:
                 admin.menu_message_id = message_id
+                session.commit()
+        finally:
+            session.close()
+
+    def set_student_avatar(self, student_id: int, avatar_emoji: str):
+        """Устанавливает эмодзи-аватарку студенту"""
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                student.avatar_emoji = avatar_emoji
+                session.commit()
+        finally:
+            session.close()
+
+    def set_student_theme(self, student_id: int, theme: str):
+        """Устанавливает тему оформления студенту"""
+        session = self.Session()
+        try:
+            student = session.query(Student).filter_by(id=student_id).first()
+            if student:
+                student.theme = theme
                 session.commit()
         finally:
             session.close() 

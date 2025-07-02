@@ -49,7 +49,8 @@ from handlers.student_handlers import (
     send_student_menu_by_chat_id, show_student_notes_menu, show_student_homework_menu,
     show_student_roadmap, student_reschedule_menu, student_reschedule_start, student_reschedule_choose_week,
     student_reschedule_choose_day, student_reschedule_choose_time, student_reschedule_confirm,
-    RESCHEDULE_CHOOSE_LESSON, RESCHEDULE_CHOOSE_WEEK, RESCHEDULE_CHOOSE_DAY, RESCHEDULE_CHOOSE_TIME, RESCHEDULE_CONFIRM
+    RESCHEDULE_CHOOSE_LESSON, RESCHEDULE_CHOOSE_WEEK, RESCHEDULE_CHOOSE_DAY, RESCHEDULE_CHOOSE_TIME, RESCHEDULE_CONFIRM,
+    handle_student_text
 )
 from handlers.homework_handlers import (
     show_homework_menu,
@@ -95,7 +96,9 @@ from handlers.notes_handlers import (
     SELECT_NOTE, EDIT_TITLE, EDIT_LINK,
     ASK_FOR_FILE, WAIT_FOR_FILE
 )
-from handlers.common_handlers import handle_start
+from handlers.common_handlers import (
+    handle_start, handle_exam_preparation, handle_personal_cabinet, handle_back_to_start
+)
 from datetime import time, timedelta, datetime
 import pytz
 import asyncio
@@ -125,6 +128,7 @@ def main():
     main_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", handle_start),
+            CallbackQueryHandler(handle_personal_cabinet, pattern="^personal_cabinet$"),
             CallbackQueryHandler(handle_student_actions, pattern="^student_change_name$")
         ],
         states={
@@ -136,7 +140,10 @@ def main():
                 CallbackQueryHandler(handle_student_actions, pattern="^student_back_to_settings$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", handle_start)],
+        fallbacks=[
+            CommandHandler("cancel", handle_start),
+            CallbackQueryHandler(handle_back_to_start, pattern="^back_to_start$")
+        ],
         name="main_handler",
         persistent=False
     )
@@ -549,7 +556,7 @@ def main():
     application.add_handler(statistics_handler)
     application.add_handler(schedule_handler)
     application.add_handler(reschedule_handler)
-    application.add_handler(CommandHandler("start", handle_start))
+    # application.add_handler(CommandHandler("start", handle_start))  # Убираем дублирование, так как start уже в main_handler
     application.add_handler(CommandHandler("admin", admin_menu))
     application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^(admin_|info_type_|student_info_|edit_type_|edit_student_|assign_note_|manual_select_notes|skip_note_assignment|assign_unassigned_note_|schedule_exam_|reschedule_settings).*$"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^notif_"))  # Обработчик уведомлений
@@ -565,7 +572,14 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_start_"))
     application.add_handler(CallbackQueryHandler(handle_admin_actions, pattern="^reschedule_end_"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^reschedule_"))  # Обработчик переноса занятий (выше общего)
+    # Обработчики главного меню
+    application.add_handler(CallbackQueryHandler(handle_exam_preparation, pattern="^exam_preparation$"))
+    application.add_handler(CallbackQueryHandler(handle_back_to_start, pattern="^back_to_start$"))
+    
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^set_avatar_"))
+    application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^set_theme_"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_text))
     
     # Запускаем бота
     application.run_polling()

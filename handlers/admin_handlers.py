@@ -1,6 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from core.database import Database, ExamType, PendingNoteAssignment, Schedule
+from handlers.student_handlers import THEME_EMOJIS, THEME_NAMES
 import os
 import uuid
 import json
@@ -174,9 +175,9 @@ async def enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("📝 ОГЭ", callback_data="student_exam_OGE"),
-            InlineKeyboardButton("📚 ЕГЭ", callback_data="student_exam_EGE")
+            InlineKeyboardButton("🎓 ЕГЭ", callback_data="student_exam_EGE")
         ],
-        [InlineKeyboardButton("🏫 Школьная программа", callback_data="student_exam_SCHOOL")],
+        [InlineKeyboardButton("📖 Школьная программа", callback_data="student_exam_SCHOOL")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_add")]
     ]
     
@@ -204,7 +205,7 @@ async def choose_exam(update: Update, context: ContextTypes.DEFAULT_TYPE):
     student_data[user_id]["exam_type"] = ExamType[exam_type]
     
     await query.message.edit_text(
-        "Отправьте ссылку на профиль ученика:",
+        "Введите ссылку для подключения:",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ Отмена", callback_data="cancel_add")
         ]])
@@ -468,11 +469,11 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "admin_students_info":
         keyboard = [
             [
-                InlineKeyboardButton("ОГЭ", callback_data="info_type_OGE"),
-                InlineKeyboardButton("ЕГЭ", callback_data="info_type_EGE")
+                InlineKeyboardButton("📝 ОГЭ", callback_data="info_type_OGE"),
+                InlineKeyboardButton("🎓 ЕГЭ", callback_data="info_type_EGE")
             ],
             [
-                InlineKeyboardButton("Школьная программа", callback_data="info_type_SCHOOL")
+                InlineKeyboardButton("📖 Школьная программа", callback_data="info_type_SCHOOL")
             ],
             [InlineKeyboardButton("🔙 Назад", callback_data="admin_students")]
         ]
@@ -611,11 +612,11 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "admin_delete":
         keyboard = [
             [
-                InlineKeyboardButton("ОГЭ", callback_data="delete_type_OGE"),
-                InlineKeyboardButton("ЕГЭ", callback_data="delete_type_EGE")
+                InlineKeyboardButton("📝 ОГЭ", callback_data="delete_type_OGE"),
+                InlineKeyboardButton("🎓 ЕГЭ", callback_data="delete_type_EGE")
             ],
             [
-                InlineKeyboardButton("Школьная программа", callback_data="delete_type_SCHOOL")
+                InlineKeyboardButton("📖 Школьная программа", callback_data="delete_type_SCHOOL")
             ],
             [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
         ]
@@ -701,11 +702,11 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
     elif query.data == "admin_edit":
         keyboard = [
             [
-                InlineKeyboardButton("ОГЭ", callback_data="edit_type_OGE"),
-                InlineKeyboardButton("ЕГЭ", callback_data="edit_type_EGE")
+                InlineKeyboardButton("📝 ОГЭ", callback_data="edit_type_OGE"),
+                InlineKeyboardButton("🎓 ЕГЭ", callback_data="edit_type_EGE")
             ],
             [
-                InlineKeyboardButton("Школьная программа", callback_data="edit_type_SCHOOL")
+                InlineKeyboardButton("📖 Школьная программа", callback_data="edit_type_SCHOOL")
             ],
             [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
         ]
@@ -767,7 +768,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [
                 InlineKeyboardButton("👤 Изменить имя", callback_data=f"edit_name_{student_id}"),
-                InlineKeyboardButton("📚 Изменить экзамен", callback_data=f"edit_exam_{student_id}")
+                InlineKeyboardButton("🎓 Изменить экзамен", callback_data=f"edit_exam_{student_id}")
             ],
             [
                 InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
@@ -830,7 +831,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
                 reply_markup=InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton("👤 Изменить имя", callback_data=f"edit_name_{student_id}"),
-                        InlineKeyboardButton("📚 Изменить экзамен", callback_data=f"edit_exam_{student_id}")
+                        InlineKeyboardButton("�� Изменить экзамен", callback_data=f"edit_exam_{student_id}")
                     ],
                     [
                         InlineKeyboardButton("🔗 Изменить ссылку", callback_data=f"edit_link_{student_id}"),
@@ -981,8 +982,8 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         db = context.bot_data['db']
         pending = db.get_pending_note_assignment_by_process(process_id)
         db.delete_pending_note_assignment_by_process(process_id)
-        back_cb = "admin_give_homework" if pending and pending.origin == 'give_homework' else "admin_check_unassigned_notes"
-        await query.edit_message_text("✅ Домашнее задание выдано без конспекта", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]]))
+        # Всегда возвращаем в главное меню ученика
+        await query.edit_message_text("✅ Домашнее задание выдано без конспекта", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="student_menu")]]))
         return ConversationHandler.END
 
     elif query.data.startswith("assign_note_homework_"):
@@ -1168,9 +1169,9 @@ async def show_exam_buttons_edit(update: Update, student_id: int) -> None:
     keyboard = [
         [
             InlineKeyboardButton("📝 ОГЭ", callback_data=f"student_new_exam_OGE"),
-            InlineKeyboardButton("📚 ЕГЭ", callback_data=f"student_new_exam_EGE")
+            InlineKeyboardButton("🎓 ЕГЭ", callback_data=f"student_new_exam_EGE")
         ],
-        [InlineKeyboardButton("🏫 Школьная программа", callback_data=f"student_new_exam_SCHOOL")],
+        [InlineKeyboardButton("📖 Школьная программа", callback_data=f"student_new_exam_SCHOOL")],
         [InlineKeyboardButton("❌ Отмена", callback_data="edit_cancel")]
     ]
     
@@ -1243,7 +1244,7 @@ async def give_homework_menu(update: Update, context: ContextTypes.DEFAULT_TYPE 
 
 async def handle_give_homework_variant(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> int:
     keyboard = [
-        [InlineKeyboardButton("📝 ОГЭ", callback_data="give_variant_exam_OGE"), InlineKeyboardButton("📚 ЕГЭ", callback_data="give_variant_exam_EGE")],
+        [InlineKeyboardButton("📝 ОГЭ", callback_data="give_variant_exam_OGE"), InlineKeyboardButton("🎓 ЕГЭ", callback_data="give_variant_exam_EGE")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1308,9 +1309,9 @@ async def give_homework_choose_exam(update: Update, context: ContextTypes.DEFAUL
     keyboard = [
         [
             InlineKeyboardButton("📝 ОГЭ", callback_data="give_hw_exam_OGE"),
-            InlineKeyboardButton("📚 ЕГЭ", callback_data="give_hw_exam_EGE")
+            InlineKeyboardButton("🎓 ЕГЭ", callback_data="give_hw_exam_EGE")
         ],
-        [InlineKeyboardButton("🏫 Школьная программа", callback_data="give_hw_exam_SCHOOL")],
+        [InlineKeyboardButton("📖 Школьная программа", callback_data="give_hw_exam_SCHOOL")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_give_homework")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1972,8 +1973,8 @@ async def show_statistics_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     keyboard = [
-        [InlineKeyboardButton("ОГЭ", callback_data="statistics_exam_OGE"),
-         InlineKeyboardButton("ЕГЭ", callback_data="statistics_exam_EGE")],
+        [InlineKeyboardButton("📝 ОГЭ", callback_data="statistics_exam_OGE"),
+         InlineKeyboardButton("🎓 ЕГЭ", callback_data="statistics_exam_EGE")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2239,9 +2240,9 @@ async def show_schedule_exam_selection(update: Update, context: ContextTypes.DEF
     keyboard = [
         [
             InlineKeyboardButton("📝 ОГЭ", callback_data=f"schedule_exam_{action}_OGE"),
-            InlineKeyboardButton("📚 ЕГЭ", callback_data=f"schedule_exam_{action}_EGE")
+            InlineKeyboardButton("🎓 ЕГЭ", callback_data=f"schedule_exam_{action}_EGE")
         ],
-        [InlineKeyboardButton("🏫 Школьная программа", callback_data=f"schedule_exam_{action}_SCHOOL")],
+        [InlineKeyboardButton("📖 Школьная программа", callback_data=f"schedule_exam_{action}_SCHOOL")],
         [InlineKeyboardButton("🔙 Назад", callback_data="admin_schedule")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3062,36 +3063,49 @@ async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_
             await context.bot.delete_message(chat_id=chat_id, message_id=last_menu_id)
         except Exception as e:
             pass
+    
     unread_count = len(db.get_notifications(student.id, only_unread=True))
-    notif_text = f"🔔 Уведомления ({unread_count})" if unread_count else "🔔 Уведомления"
+    
+    # Используем отображаемое имя из базы данных
+    display_name = student.display_name or student.name
+    
+    # Применяем аватарку и тему
+    avatar_emoji = student.avatar_emoji or "👋"
+    greeting = f"{avatar_emoji} Привет, {display_name}!"
+    
+    # Применяем тему к эмодзи в меню
+    theme = student.theme or "classic"
+    emojis = THEME_EMOJIS.get(theme, THEME_EMOJIS["classic"])
+    names = THEME_NAMES.get(theme, THEME_NAMES["classic"])
+    notif_text = f"{emojis['notifications']} {names['notifications']} ({unread_count})" if unread_count else f"{emojis['notifications']} {names['notifications']}"
+    
     if student.exam_type.value == 'Школьная программа':
         keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
-            [InlineKeyboardButton("📝 Конспекты", callback_data="student_notes")],
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
+            [InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes")],
             [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
                 InlineKeyboardButton(notif_text, callback_data="student_notifications")
             ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
         ]
     else:
         keyboard = [
-            [InlineKeyboardButton("📚 Домашнее задание", callback_data="student_homework_menu")],
-            [InlineKeyboardButton("🔗 Подключиться к занятию", callback_data="student_join_lesson")],
+            [InlineKeyboardButton(f"{emojis['homework']} {names['homework']}", callback_data="student_homework_menu")],
+            [InlineKeyboardButton(f"{emojis['lesson']} {names['lesson']}", callback_data="student_join_lesson")],
             [
-                InlineKeyboardButton("📝 Конспекты", callback_data="student_notes"),
-                InlineKeyboardButton("🗺️ Роадмап", callback_data="student_roadmap")
+                InlineKeyboardButton(f"{emojis['notes']} {names['notes']}", callback_data="student_notes"),
+                InlineKeyboardButton(f"{emojis['roadmap']} {names['roadmap']}", callback_data="student_roadmap")
             ],
             [
-                InlineKeyboardButton("📅 Расписание", callback_data="student_schedule"),
+                InlineKeyboardButton(f"{emojis['schedule']} {names['schedule']}", callback_data="student_schedule"),
                 InlineKeyboardButton(notif_text, callback_data="student_notifications")
             ],
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="student_settings")]
+            [InlineKeyboardButton(f"{emojis['settings']} {names['settings']}", callback_data="student_settings")]
         ]
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    display_name = student.display_name or student.name
-    greeting = f"👋 Привет, {display_name}!"
     msg = await context.bot.send_message(chat_id=chat_id, text=greeting, reply_markup=reply_markup)
     db.update_student_menu_message_id(student.id, msg.message_id)
 
