@@ -504,34 +504,41 @@ class Database:
             session.close()
 
     def get_homeworks_for_student_with_filter(self, student_id: int, show_old: bool = None) -> list:
-        """Получает домашние задания для студента с учетом настройки показа старых заданий"""
+        """Получает домашние задания для студента с учетом настройки показа старых заданий
+        Исключает "виртуальные" задания (без ссылки и файла) и задания со статусом "не пройдено" (по последнему назначению) из списка."""
         session = self.Session()
         try:
-            # Получаем все назначенные задания
+            not_passed_statuses = {'not_passed', 'not completed', 'notcompleted', 'Не пройдено', 'not passed'}
+            # Получаем все назначения для студента
             assigned = session.query(StudentHomework).filter_by(student_id=student_id).all()
-            
             if not assigned:
                 return []
-            
             # Если show_old не указан, берем из настроек студента
             if show_old is None:
                 student = session.query(Student).filter_by(id=student_id).first()
                 show_old = student.show_old_homework if student else False
-            
+            # Для каждого homework_id берём только последнюю запись (по assigned_at)
+            last_assignments = {}
+            for sh in assigned:
+                if sh.homework_id not in last_assignments or sh.assigned_at > last_assignments[sh.homework_id].assigned_at:
+                    last_assignments[sh.homework_id] = sh
             # Получаем информацию о заданиях
             homeworks = []
-            for sh in assigned:
+            for sh in last_assignments.values():
                 homework = session.query(Homework).filter_by(id=sh.homework_id).first()
                 if homework:
+                    # Фильтруем "виртуальные" задания: нет ссылки и нет файла
+                    if (not homework.link or homework.link.strip() == "") and (not homework.file_path or homework.file_path.strip() == ""):
+                        continue
+                    # Фильтруем задания со статусом "не пройдено" (по последнему назначению)
+                    if sh.status and sh.status.strip().lower() in {s.lower() for s in not_passed_statuses}:
+                        continue
                     homeworks.append((homework, sh.assigned_at))
-            
             # Сортируем по номеру в названии (1, 2, 3, 11, 23...)
             homeworks.sort(key=lambda x: x[0].get_task_number())
-            
             # Если не показывать старые, возвращаем только самое новое (последнее по номеру)
             if not show_old and homeworks:
                 return [homeworks[-1]]
-            
             return homeworks
         finally:
             session.close()
@@ -765,21 +772,23 @@ class Database:
             session.close()
 
     def update_homework_status(self, student_id: int, homework_id: int, status: str) -> bool:
-        """Обновляет статус домашнего задания для студента"""
+        """Обновляет статус домашнего задания для студента. Если записи нет — создаёт новую."""
         session = self.Session()
         try:
-            # Находим запись о назначении домашнего задания
             student_homework = session.query(StudentHomework).filter_by(
                 student_id=student_id, 
                 homework_id=homework_id
             ).first()
-            
             if student_homework:
                 student_homework.status = status
                 session.commit()
                 return True
             else:
-                return False
+                # Если записи нет — создаём новую
+                new_sh = StudentHomework(student_id=student_id, homework_id=homework_id, status=status)
+                session.add(new_sh)
+                session.commit()
+                return True
         except:
             session.rollback()
             return False
