@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from core.database import Database, ExamType, PendingNoteAssignment, Schedule
+from core.database import Database, ExamType, PendingNoteAssignment, Schedule, Homework
 from handlers.student_handlers import THEME_EMOJIS, THEME_NAMES
 import os
 import uuid
@@ -8,6 +8,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta
 import pytz
+import logging
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -293,7 +294,146 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer()
     except Exception as e:
         pass
-    
+    # Логгирование всех callback_data
+    logging.warning(f"[handle_admin_actions] callback_data: {query.data}")
+
+    # --- ВАЖНО: сначала обрабатываем все edit_task_status... ---
+    if query.data.startswith("edit_task_status_set_"):
+        logging.warning(f"[handle_admin_actions] edit_task_status_set_ callback_data: {query.data}")
+        parts = query.data.split("_")
+        logging.warning(f"[handle_admin_actions] parts: {parts}")
+        student_id = int(parts[4])
+        task_num = json.loads(parts[5])
+        status = parts[6]
+        logging.warning(f"[handle_admin_actions] student_id: {student_id}, task_num: {task_num}, status: {status}")
+        db = context.bot_data['db']
+        student = db.get_student_by_id(student_id)
+        status_map = {
+            "completed": "Пройдено",
+            "in_progress": "В процессе",
+            "not_completed": "Не пройдено"
+        }
+        status_text = status_map.get(status, status)
+        if student:
+            # Найти Homework по номеру и exam_type
+            session = db.Session()
+            try:
+                homeworks = session.query(Homework).filter(Homework.exam_type == student.exam_type).all()
+                homework = next((hw for hw in homeworks if hw.get_task_number() == task_num), None)
+                if not homework:
+                    # Если не найдено — создаём виртуальное задание
+                    title = f"Задание {task_num}"
+                    link = ""
+                    homework = Homework(title=title, link=link, exam_type=student.exam_type)
+                    session.add(homework)
+                    session.commit()
+                    session.refresh(homework)  # Получаем id до закрытия сессии
+                homework_id = homework.id
+            finally:
+                session.close()
+            if homework:
+                db.update_homework_status(student.id, homework_id, status)
+                await query.edit_message_text(
+                    f"Статус задания {task_num} успешно изменён на: {status_text}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_task_status_{student_id}")]
+                    ])
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ Не удалось создать задание с номером {task_num}.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_task_status_{student_id}")]
+                    ])
+                )
+        else:
+            await query.edit_message_text(
+                "❌ Студент не найден."
+            )
+        return EDIT_TASK_STATUS
+
+    elif query.data.startswith("edit_task_select_"):
+        logging.warning(f"[handle_admin_actions] edit_task_select_ callback_data: {query.data}")
+        parts = query.data.split("_")
+        logging.warning(f"[handle_admin_actions] parts: {parts}")
+        student_id = int(parts[3])
+        task_num = json.loads(parts[4])
+        logging.warning(f"[handle_admin_actions] student_id: {student_id}, task_num: {task_num}")
+        await show_task_status_menu(update, context, student_id, task_num)
+        return EDIT_TASK_STATUS
+
+    elif query.data.startswith("edit_task_status_"):
+        logging.warning(f"[handle_admin_actions] edit_task_status_ callback_data: {query.data}")
+        parts = query.data.split("_")
+        logging.warning(f"[handle_admin_actions] parts: {parts}")
+        student_id = int(parts[3])
+        page = 0
+        if len(parts) > 4 and parts[4] == "page":
+            page = int(parts[5])
+        logging.warning(f"[handle_admin_actions] student_id: {student_id}, page: {page}")
+        db = context.bot_data['db']
+        student = db.get_student_by_id(student_id)
+        if not student:
+            await query.message.edit_text("❌ Студент не найден!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit")]]))
+            return EDIT_TASK_STATUS
+        if student.exam_type.value == 'ЕГЭ':
+            roadmap = [
+                (1, '🖊️'), (4, '🖊️'), (11, '🖊️💻'), (7, '🖊️💻'), (10, '📝'), (3, '📊'), (18, '📊'), (22, '📊'),
+                (9, '📊💻'), ('Python', '🐍'), (2, '🐍'), (15, '🐍'), (6, '🐍'), (14, '🐍'), (5, '🐍'), (12, '🐍'),
+                (8, '🐍'), (13, '🐍'), (16, '🐍'), (23, '🐍'), ('19-21', '🖊️💻'), (25, '🐍'), (27, '🐍'), (24, '🐍'), (26, '📊💻')
+            ]
+        elif student.exam_type.value == 'ОГЭ':
+            roadmap = [
+                (1, '🖊️'), (2, '🖊️'), (4, '🖊️'), (9, '🖊️'), (7, '🖊️'), (8, '🖊️'), (10, '🖊️'), (5, '🖊️'), (3, '🖊️'), (6, '🖊️'),
+                (11, '📁'), (12, '📁'), ('13.1', '🗂️'), ('13.2', '🗂️'), (14, '🗂️'), (15, '🐍'), ('Python', '🐍'), (16, '🐍')
+            ]
+        else:
+            await query.message.edit_text("Для школьной программы изменение статусов недоступно.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")]]))
+            return EDIT_TASK_STATUS
+        # Получаем статусы из базы
+        statuses = db.get_homework_status_for_student(student_id, student.exam_type)
+        per_page = 8
+        total = len(roadmap)
+        max_page = (total + per_page - 1) // per_page - 1
+        page = max(0, min(page, max_page))
+        start = page * per_page
+        end = start + per_page
+        roadmap_page = roadmap[start:end]
+        keyboard = []
+        for i in range(0, len(roadmap_page), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(roadmap_page):
+                    num, emoji = roadmap_page[i + j]
+                    status = statuses.get(num)
+                    if status is None:
+                        status = statuses.get(str(num))
+                    if status is None:
+                        status = "Не пройдено"
+                    status = convert_status_from_db(status)
+                    if status == "Пройдено":
+                        status_emoji = "✅"
+                    elif status == "В процессе":
+                        status_emoji = "🔄"
+                    else:
+                        status_emoji = "❌"
+                    button_text = f"Задание {num} {status_emoji}"
+                    row.append(InlineKeyboardButton(button_text, callback_data=f"edit_task_select_{student_id}_{json.dumps(str(num))}_page_{page}"))
+            keyboard.append(row)
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"edit_task_status_{student_id}_page_{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"edit_task_status_{student_id}_page_{page+1}"))
+        keyboard.append(nav_row)
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")])
+        await query.message.edit_text(
+            f"Выберите задание для изменения статуса:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return EDIT_TASK_STATUS
+
     if query.data == "admin_stats":
         return await show_statistics_menu(update, context)
     elif query.data == "admin_schedule":
@@ -1017,76 +1157,6 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         student = db.get_student_by_id(student_id)
         await query.edit_message_text(f"📚 Выберите конспект для ученика {student.name}:\n✅ - уже выдан\n📚 - доступен для выдачи", reply_markup=InlineKeyboardMarkup(keyboard))
         return ConversationHandler.END
-
-    elif query.data.startswith("edit_task_status_"):
-        parts = query.data.split("_")
-        # edit_task_status_{student_id}_page_{page_num} или edit_task_status_{student_id}
-        student_id = int(parts[3])
-        page = 0
-        if len(parts) > 4 and parts[4] == "page":
-            page = int(parts[5])
-        db = context.bot_data['db']
-        student = db.get_student_by_id(student_id)
-        if not student:
-            await query.message.edit_text("❌ Студент не найден!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit")]]))
-            return EDIT_TASK_STATUS
-        if student.exam_type.value == 'ЕГЭ':
-            roadmap = [
-                (1, '🖊️'), (4, '🖊️'), (11, '🖊️💻'), (7, '🖊️💻'), (10, '📝'), (3, '📊'), (18, '📊'), (22, '📊'),
-                (9, '📊💻'), ('Python', '🐍'), (2, '🐍'), (15, '🐍'), (6, '🐍'), (14, '🐍'), (5, '🐍'), (12, '🐍'),
-                (8, '🐍'), (13, '🐍'), (16, '🐍'), (23, '🐍'), ('19-21', '🖊️💻'), (25, '🐍'), (27, '🐍'), (24, '🐍'), (26, '📊💻')
-            ]
-        elif student.exam_type.value == 'ОГЭ':
-            roadmap = [
-                (1, '🖊️'), (2, '🖊️'), (4, '🖊️'), (9, '🖊️'), (7, '🖊️'), (8, '🖊️'), (10, '🖊️'), (5, '🖊️'), (3, '🖊️'), (6, '🖊️'),
-                (11, '📁'), (12, '📁'), ('13.1', '🗂️'), ('13.2', '🗂️'), (14, '🗂️'), (15, '🐍'), ('Python', '🐍'), (16, '🐍')
-            ]
-        else:
-            await query.message.edit_text("Для школьной программы изменение статусов недоступно.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")]]))
-            return EDIT_TASK_STATUS
-        # Получаем статусы из базы
-        statuses = db.get_homework_status_for_student(student_id, student.exam_type)
-        per_page = 8
-        total = len(roadmap)
-        max_page = (total + per_page - 1) // per_page - 1
-        page = max(0, min(page, max_page))
-        start = page * per_page
-        end = start + per_page
-        roadmap_page = roadmap[start:end]
-        keyboard = []
-        for i in range(0, len(roadmap_page), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(roadmap_page):
-                    num, emoji = roadmap_page[i + j]
-                    status = statuses.get(num)
-                    if status is None:
-                        status = statuses.get(str(num))
-                    if status is None:
-                        status = "Не пройдено"
-                    status = convert_status_from_db(status)
-                    if status == "Пройдено":
-                        status_emoji = "✅"
-                    elif status == "В процессе":
-                        status_emoji = "🔄"
-                    else:
-                        status_emoji = "❌"
-                    button_text = f"Задание {num} {status_emoji}"
-                    row.append(InlineKeyboardButton(button_text, callback_data=f"edit_task_select_{student_id}_{json.dumps(str(num))}_page_{page}"))
-            keyboard.append(row)
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"edit_task_status_{student_id}_page_{page-1}"))
-        nav_row.append(InlineKeyboardButton(f"{page+1}/{max_page+1}", callback_data="noop"))
-        if page < max_page:
-            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"edit_task_status_{student_id}_page_{page+1}"))
-        keyboard.append(nav_row)
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"edit_student_{student_id}")])
-        await query.message.edit_text(
-            f"Выберите задание для изменения статуса:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return EDIT_TASK_STATUS
 
     # Для всех остальных случаев
     return ConversationHandler.END
@@ -3470,3 +3540,40 @@ async def handle_admin_notification_actions(update: Update, context: ContextType
             text="🔔 Все уведомления удалены!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]])
         )
+
+async def show_task_status_menu(update, context, student_id, task_num):
+    """Показывает меню смены статуса задания для администратора"""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    query = update.callback_query
+    # Кнопки статусов
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Пройдено", callback_data=f"edit_task_status_set_{student_id}_{task_num}_completed"),
+            InlineKeyboardButton("🔄 В процессе", callback_data=f"edit_task_status_set_{student_id}_{task_num}_in_progress"),
+            InlineKeyboardButton("❌ Не пройдено", callback_data=f"edit_task_status_set_{student_id}_{task_num}_not_completed"),
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data=f"edit_task_status_{student_id}")]
+    ]
+    await query.edit_message_text(
+        text=f"Выберите новый статус для задания {task_num}:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return
+
+async def show_task_status_set(update, context, student_id, task_num):
+    """Обрабатывает выбор статуса задания"""
+    query = update.callback_query
+    await query.answer()
+    status = query.data.split('_')[-1]
+    db = context.bot_data['db']
+    student = db.get_student_by_id(student_id)
+    if student:
+        db.update_homework_status(student.id, task_num, status)
+        await query.edit_message_text(
+            f"Статус задания {task_num} успешно изменен на: {status}"
+        )
+    else:
+        await query.edit_message_text(
+            "❌ Студент не найден."
+        )
+    return ConversationHandler.END

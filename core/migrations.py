@@ -505,21 +505,5 @@ def run_all_migrations():
     conn.commit()
     conn.close()
 
-    # 5. Добавление полей avatar_emoji и theme в таблицу students
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text("PRAGMA table_info(students)"))
-            columns = [row[1] for row in result.fetchall()]
-            
-            if 'avatar_emoji' not in columns:
-                conn.execute(text("ALTER TABLE students ADD COLUMN avatar_emoji VARCHAR"))
-                conn.commit()
-                
-            if 'theme' not in columns:
-                conn.execute(text("ALTER TABLE students ADD COLUMN theme VARCHAR"))
-                conn.commit()
-    except Exception as e:
-        pass
-
 if __name__ == "__main__":
     run_all_migrations() 
