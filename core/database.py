@@ -265,6 +265,21 @@ class RescheduleSettings(Base):
     max_weeks_ahead = Column(Integer, default=2)
     slot_interval = Column(Integer, default=15)  # интервал слотов в минутах
 
+class ScheduledReminder(Base):
+    __tablename__ = 'scheduled_reminders'
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('students.id'), nullable=False)
+    schedule_id = Column(Integer, ForeignKey('schedule.id'), nullable=False)
+    reminder_time = Column(DateTime, nullable=False)  # Время, когда должно сработать напоминание
+    lesson_time = Column(DateTime, nullable=False)    # Время самого занятия
+    is_sent = Column(Boolean, default=False)          # Отправлено ли уже напоминание
+    created_at = Column(DateTime, default=func.now())
+    
+    # Создаем уникальный индекс для предотвращения дублирования
+    __table_args__ = (
+        UniqueConstraint('student_id', 'schedule_id', 'reminder_time', name='unique_reminder'),
+    )
+
 class Database:
     _slots_cache = {}
     _slots_cache_lock = threading.Lock()
@@ -1668,5 +1683,101 @@ class Database:
             if student:
                 student.theme = theme
                 session.commit()
+        finally:
+            session.close()
+
+    def add_scheduled_reminder(self, student_id: int, schedule_id: int, reminder_time: datetime, lesson_time: datetime) -> bool:
+        """Добавляет запланированное напоминание в базу данных"""
+        session = self.Session()
+        try:
+            reminder = ScheduledReminder(
+                student_id=student_id,
+                schedule_id=schedule_id,
+                reminder_time=reminder_time,
+                lesson_time=lesson_time,
+                is_sent=False
+            )
+            session.add(reminder)
+            session.commit()
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f'[reminder] Ошибка при добавлении напоминания в БД: {e}')
+            return False
+        finally:
+            session.close()
+
+    def get_pending_reminders(self, current_time: datetime = None) -> list:
+        from pytz import timezone
+        moscow_tz = timezone('Europe/Moscow')
+        if current_time is None:
+            current_time = datetime.now(moscow_tz)
+        elif current_time.tzinfo is None:
+            current_time = moscow_tz.localize(current_time)
+        session = self.Session()
+        try:
+            reminders = session.query(ScheduledReminder).filter(
+                ScheduledReminder.reminder_time <= current_time,
+                ScheduledReminder.is_sent == False
+            ).all()
+            return reminders
+        finally:
+            session.close()
+
+    def mark_reminder_sent(self, reminder_id: int) -> bool:
+        """Отмечает напоминание как отправленное"""
+        session = self.Session()
+        try:
+            reminder = session.query(ScheduledReminder).filter_by(id=reminder_id).first()
+            if reminder:
+                reminder.is_sent = True
+                session.commit()
+                return True
+            return False
+        except Exception as e:
+            session.rollback()
+            print(f'[reminder] Ошибка при отметке напоминания как отправленного: {e}')
+            return False
+        finally:
+            session.close()
+
+    def clear_old_reminders(self, days: int = 7) -> int:
+        """Удаляет старые напоминания (отправленные или просроченные)"""
+        cutoff_date = datetime.now() - timedelta(days=days)
+        session = self.Session()
+        try:
+            deleted_count = session.query(ScheduledReminder).filter(
+                (ScheduledReminder.is_sent == True) | 
+                (ScheduledReminder.reminder_time < cutoff_date)
+            ).delete()
+            session.commit()
+            return deleted_count
+        except Exception as e:
+            session.rollback()
+            print(f'[reminder] Ошибка при удалении старых напоминаний: {e}')
+            return 0
+        finally:
+            session.close()
+
+    def get_student_reminders(self, student_id: int) -> list:
+        """Получает все напоминания для конкретного студента"""
+        session = self.Session()
+        try:
+            reminders = session.query(ScheduledReminder).filter_by(student_id=student_id).all()
+            return reminders
+        finally:
+            session.close()
+
+    def delete_student_reminders(self, student_id: int) -> int:
+        """Удаляет все напоминания для конкретного студента"""
+        session = self.Session()
+        try:
+            deleted_count = session.query(ScheduledReminder).filter_by(student_id=student_id).delete()
+            session.commit()
+            return deleted_count
+        except Exception as e:
+            session.rollback()
+            print(f'[reminder] Ошибка при удалении напоминаний студента: {e}')
+            return 0
         finally:
             session.close() 
