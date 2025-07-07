@@ -1507,7 +1507,6 @@ class Database:
             except ImportError:
                 slots = []
             except Exception as e:
-                print(f"Ошибка при проверке iCal календаря: {e}")
                 slots = []
             if not slots:
                 # Старая логика (если iCal недоступен)
@@ -1563,9 +1562,6 @@ class Database:
             except ImportError:
                 # Если модуль iCal недоступен, пропускаем проверку
                 pass
-            except Exception as e:
-                # Если произошла ошибка при проверке календаря, логируем и продолжаем
-                print(f"Ошибка при проверке iCal календаря: {e}")
             
             return True  # Нет пересечений
         finally:
