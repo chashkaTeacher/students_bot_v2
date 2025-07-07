@@ -40,7 +40,8 @@ from handlers.admin_handlers import (
     SCHEDULE_EDIT_CHOOSE_PARAM, SCHEDULE_EDIT_DAY, SCHEDULE_EDIT_TIME, SCHEDULE_EDIT_DURATION,
     show_reschedule_settings, show_reschedule_hours_settings, show_reschedule_end_hours_settings,
     save_reschedule_hours, show_reschedule_days_settings, toggle_reschedule_day,
-    show_reschedule_interval_settings, save_reschedule_interval
+    show_reschedule_interval_settings, save_reschedule_interval,
+    restore_reminders_from_database, check_and_send_reminders
 )
 from handlers.student_handlers import (
     student_menu, handle_student_actions, handle_password, ENTER_PASSWORD,
@@ -120,6 +121,9 @@ def main():
     # Инициализируем базу данных
     db = Database()
     application.bot_data['db'] = db
+
+    # Восстанавливаем напоминания из базы данных при запуске
+    restore_reminders_from_database(application.job_queue, db)
 
     # ГЛОБАЛЬНЫЕ обработчики для статистики (ставим до ConversationHandler-ов)
     application.add_handler(CallbackQueryHandler(handle_statistics_student_choice, pattern="^statistics_page_\\d+$"))
@@ -580,6 +584,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^set_theme_"))
     application.add_handler(CallbackQueryHandler(handle_student_actions, pattern="^student_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_student_text))
+    
+    # Команда для проверки напоминаний (только для админа)
+    application.add_handler(CommandHandler("check_reminders", check_and_send_reminders))
     
     # Запускаем бота
     application.run_polling()

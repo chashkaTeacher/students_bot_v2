@@ -3086,87 +3086,148 @@ async def send_schedule_change_notification(context, student, schedule, changed_
 
 def plan_schedule_reminders_for_student(job_queue, db, student_id, tz_str='Europe/Moscow'):
     """Планирует напоминания за 15 минут до каждого занятия ученика на ближайшую неделю"""
+    if job_queue is None:
+        print('[reminder] job_queue is None, напоминание не будет запланировано')
+        return
+    
     student = db.get_student_by_id(student_id)
     if not student:
+        print(f'[reminder] Студент с id={student_id} не найден')
         return
+    
     schedules = db.get_student_schedule(student_id)
     tz = pytz.timezone(tz_str)
     now = datetime.now(tz)
+    
     for schedule in schedules:
-        # Определяем дату ближайшего занятия
-        lesson_time = datetime.strptime(schedule.time, '%H:%M').time()
-        # Определяем ближайший день недели
-        days_ahead = (schedule.day_of_week - now.weekday()) % 7
-        lesson_date = (now + timedelta(days=days_ahead)).date()
-        lesson_dt = tz.localize(datetime.combine(lesson_date, lesson_time))
-        # Если занятие уже прошло сегодня, берем на следующей неделе
-        if lesson_dt < now:
-            lesson_dt += timedelta(days=7)
-        # Время напоминания
-        reminder_dt = lesson_dt - timedelta(minutes=15)
-        # Не планируем напоминание в прошлом
-        if reminder_dt < now:
-            continue
-        # Планируем задачу
-        job_queue.run_once(
-            send_schedule_reminder,
-            when=(reminder_dt - now).total_seconds(),
-            data={
-                'student_id': student_id,
-                'schedule': {
-                    'day_of_week': schedule.day_of_week,
-                    'time': schedule.time,
-                    'duration': schedule.duration
-                }
-            },
-            name=f"reminder_{student_id}_{schedule.id}_{reminder_dt.strftime('%Y%m%d%H%M')}"
-        )
+        try:
+            lesson_time = datetime.strptime(schedule.time, "%H:%M").time()
+            # Находим следующее занятие в этот день недели
+            days_ahead = schedule.day_of_week - now.weekday()
+            if days_ahead <= 0:  # Если сегодня или уже прошло
+                days_ahead += 7  # Следующая неделя
+            
+            lesson_date = now.date() + timedelta(days=days_ahead)
+            lesson_datetime = datetime.combine(lesson_date, lesson_time)
+            lesson_datetime = tz.localize(lesson_datetime)
+            
+            # Время напоминания (за 15 минут)
+            reminder_time = lesson_datetime - timedelta(minutes=15)
+            
+            # Проверяем, что напоминание еще не в прошлом
+            if reminder_time > now:
+                # Сохраняем напоминание в базу данных
+                success = db.add_scheduled_reminder(
+                    student_id=student_id,
+                    schedule_id=schedule.id,
+                    reminder_time=reminder_time,
+                    lesson_time=lesson_datetime
+                )
+                
+                if success:
+                    print(f'[reminder] Запланировано напоминание для student_id={student_id} на {reminder_time}')
+                else:
+                    print(f'[reminder] Ошибка при сохранении напоминания в БД для student_id={student_id}')
+            else:
+                print(f'[reminder] Время напоминания уже прошло для student_id={student_id}, lesson_time={lesson_datetime}')
+                
+        except Exception as e:
+            print(f'[reminder] Ошибка при планировании напоминания для schedule_id={schedule.id}: {e}')
 
-async def send_schedule_reminder(context):
-    """Отправляет напоминание о занятии за 15 минут до начала над меню и сохраняет его как push-уведомление, удаляя предыдущие напоминания"""
-    job = context.job
-    student_id = job.data['student_id']
-    schedule = job.data['schedule']
-    db = context.bot_data['db']
-    student = db.get_student_by_id(student_id)
-    if not student or not student.telegram_id:
-        return
-    
-    # Формируем простой текст напоминания
-    text = "⏰ Через 15 минут начинается занятие!"
-    
-    # Добавляем ссылку на подключение, если она есть
-    if student.lesson_link:
-        text += f"\n\n🔗 <a href='{student.lesson_link}'>Подключиться</a>"
+async def send_schedule_reminder(context, student_id: int, schedule_id: int):
+    """Отправляет напоминание ученику о предстоящем занятии"""
+    print(f'[reminder] send_schedule_reminder вызван для student_id={student_id}, schedule_id={schedule_id}')
     
     try:
-        # Удаляем старое меню, если есть
-        last_menu_id = db.get_student_menu_message_id(student.id)
-        if last_menu_id:
-            try:
-                await context.bot.delete_message(chat_id=student.telegram_id, message_id=last_menu_id)
-            except Exception:
-                pass
-        # Удаляем все предыдущие push-напоминания (push_messages)
-        push_msgs = db.get_push_messages(student.id)
-        for push in push_msgs:
-            try:
-                await context.bot.delete_message(chat_id=student.telegram_id, message_id=push.message_id)
-            except Exception:
-                pass
-        db.clear_push_messages(student.id)
-        # Отправляем напоминание
-        msg = await context.bot.send_message(
+        db = Database()
+        student = db.get_student_by_id(student_id)
+        if not student or not student.telegram_id:
+            print(f'[reminder] Студент {student_id} не найден или не имеет telegram_id')
+            return
+        
+        schedule = db.get_schedule_by_id(schedule_id)
+        if not schedule:
+            print(f'[reminder] Расписание {schedule_id} не найдено')
+            return
+        
+        # Форматируем время занятия
+        lesson_time = datetime.strptime(schedule.time, "%H:%M").time()
+        lesson_time_str = lesson_time.strftime("%H:%M")
+        
+        # Получаем название дня недели
+        day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        day_name = day_names[schedule.day_of_week]
+        
+        message = f"🔔 Напоминание о занятии!\n\n"
+        message += f"Занятие состоится {day_name} в {lesson_time_str}\n"
+        if student.lesson_link:
+            message += f"\nСсылка на занятие: {student.lesson_link}"
+        
+        # Отправляем сообщение
+        await context.bot.send_message(
             chat_id=student.telegram_id,
-            text=text,
-            parse_mode='HTML',
-            disable_web_page_preview=True
+            text=message,
+            parse_mode='HTML'
         )
-        db.add_push_message(student.id, msg.message_id)
-        # Отправляем новое меню
-        await send_student_menu_by_chat_id(context, student.telegram_id)
-    except Exception:
-        pass
+        
+        print(f'[reminder] Напоминание отправлено student_id={student_id}')
+        
+    except Exception as e:
+        print(f'[reminder] Ошибка при отправке напоминания student_id={student_id}: {e}')
+
+async def check_pending_reminders(context):
+    """Проверяет и отправляет все неотправленные напоминания из базы данных"""
+    try:
+        db = Database()
+        current_time = datetime.now()
+        
+        # Получаем все неотправленные напоминания, время которых уже наступило
+        pending_reminders = db.get_pending_reminders(current_time)
+        
+        for reminder in pending_reminders:
+            try:
+                # Отправляем напоминание
+                await send_schedule_reminder(context, reminder.student_id, reminder.schedule_id)
+                
+                # Отмечаем как отправленное
+                db.mark_reminder_sent(reminder.id)
+                
+            except Exception as e:
+                print(f'[reminder] Ошибка при обработке напоминания {reminder.id}: {e}')
+        
+        if pending_reminders:
+            print(f'[reminder] Обработано {len(pending_reminders)} напоминаний')
+            
+    except Exception as e:
+        print(f'[reminder] Ошибка при проверке напоминаний: {e}')
+
+def restore_reminders_from_database(job_queue, db):
+    """Восстанавливает все активные напоминания из базы данных при запуске бота"""
+    if job_queue is None:
+        print('[reminder] job_queue is None, восстановление напоминаний невозможно')
+        return
+    
+    try:
+        # Получаем все неотправленные напоминания
+        all_reminders = db.get_pending_reminders()
+        
+        for reminder in all_reminders:
+            # Если время напоминания еще не наступило, планируем задачу
+            if reminder.reminder_time > datetime.now():
+                delay = (reminder.reminder_time - datetime.now()).total_seconds()
+                
+                # Планируем задачу
+                job_queue.run_once(
+                    lambda ctx: send_schedule_reminder(ctx, reminder.student_id, reminder.schedule_id),
+                    when=delay
+                )
+                
+                print(f'[reminder] Восстановлено напоминание {reminder.id} на {reminder.reminder_time}')
+        
+        print(f'[reminder] Восстановлено {len(all_reminders)} напоминаний из БД')
+        
+    except Exception as e:
+        print(f'[reminder] Ошибка при восстановлении напоминаний: {e}')
 
 # Локальная функция для отправки меню студента
 async def send_student_menu_by_chat_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
@@ -3625,3 +3686,35 @@ async def show_task_status_set(update, context, student_id, task_num):
             "❌ Студент не найден."
         )
     return ConversationHandler.END
+
+async def check_and_send_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручная проверка и отправка напоминаний (для админа)"""
+    try:
+        db = Database()
+        current_time = datetime.now()
+        
+        # Получаем все неотправленные напоминания, время которых уже наступило
+        pending_reminders = db.get_pending_reminders(current_time)
+        
+        if not pending_reminders:
+            await update.message.reply_text("📋 Нет напоминаний для отправки")
+            return
+        
+        sent_count = 0
+        for reminder in pending_reminders:
+            try:
+                # Отправляем напоминание
+                await send_schedule_reminder(context, reminder.student_id, reminder.schedule_id)
+                
+                # Отмечаем как отправленное
+                db.mark_reminder_sent(reminder.id)
+                sent_count += 1
+                
+            except Exception as e:
+                print(f'[reminder] Ошибка при обработке напоминания {reminder.id}: {e}')
+        
+        await update.message.reply_text(f"✅ Отправлено {sent_count} напоминаний из {len(pending_reminders)}")
+        
+    except Exception as e:
+        print(f'[reminder] Ошибка при проверке напоминаний: {e}')
+        await update.message.reply_text(f"❌ Ошибка: {e}")
