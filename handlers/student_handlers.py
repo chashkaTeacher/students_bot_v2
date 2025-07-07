@@ -8,6 +8,7 @@ import pytz
 from datetime import timedelta
 from telegram.error import BadRequest
 from handlers.common_handlers import handle_start
+import logging
 
 # Состояния для ConversationHandler
 ENTER_PASSWORD = 0
@@ -536,9 +537,12 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
         exam_info = f"📝 Экзамен: {exam_type.value}\n" if exam_type else ""
         
         # Определяем, является ли это актуальным заданием
-        homeworks_data = db.get_homeworks_for_student_with_filter(student.id)
+        homeworks_data = db.get_homeworks_for_student_with_filter(student.id, show_old=True)
         is_current = False
         if homeworks_data:
+            # Сортируем по номеру задания (1, 2, 3, 11, 23...)
+            homeworks_data.sort(key=lambda x: x[0].get_task_number())
+            # Актуальным считается задание с самым большим номером
             is_current = homeworks_data[-1][0].id == hw_id
         
         # Статус задания
@@ -1055,32 +1059,9 @@ async def handle_student_actions(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer("Это первая страница")
         return
     elif query.data == "student_homework_next":
-        # Используем ту же логику, что и в show_student_homework_menu
-        exam_type = student.exam_type
-        if exam_type.value == 'ЕГЭ':
-            roadmap = [1, 4, 11, 7, 10, 3, 18, 22, 9, 'Python', 2, 15, 6, 14, 5, 12, 8, 13, 16, 23, '19-21', 25, 27, 24, 26]
-        elif exam_type.value == 'ОГЭ':
-            roadmap = [1, 2, 4, 9, 7, 8, 10, 5, 3, 6, 11, 12, '13.1', '13.2', 14, 15, 'Python', 16]
-        else:
-            roadmap = []
-        real_statuses = db.get_homework_status_for_student(student.id, exam_type)
-        allowed_statuses = {'completed', 'Пройдено', 'in_progress', 'В процессе'}
-        filtered_homeworks = []
-        for num in roadmap:
-            status = real_statuses.get(num)
-            if status in allowed_statuses:
-                homeworks = db.get_homework_by_exam(exam_type)
-                hw = next((h for h in homeworks if h.get_task_number() == num), None)
-                if hw:
-                    filtered_homeworks.append(hw)
+        # Простая проверка страницы - логика уже в show_student_homework_menu
         page = int(context.user_data.get('homework_page', 0))
-        per_page = 4
-        total = len(filtered_homeworks)
-        max_page = (total + per_page - 1) // per_page - 1 if total > 0 else 0
-        if page < max_page:
-            await show_student_homework_menu(update, context, student, page=page+1)
-        else:
-            await query.answer("Это последняя страница")
+        await show_student_homework_menu(update, context, student, page=page+1)
         return
     elif query.data == "student_roadmap":
         # Показываем роадмап для текущего ученика
@@ -1359,57 +1340,70 @@ async def show_student_notes_menu(update, context, student, page=0):
 async def show_student_homework_menu(update, context, student, page=0):
     db = context.bot_data['db']
     exam_type = student.exam_type
-    # Получаем роадмап по экзамену
-    if exam_type.value == 'ЕГЭ':
-        roadmap = [1, 4, 11, 7, 10, 3, 18, 22, 9, 'Python', 2, 15, 6, 14, 5, 12, 8, 13, 16, 23, '19-21', 25, 27, 24, 26]
-    elif exam_type.value == 'ОГЭ':
-        roadmap = [1, 2, 4, 9, 7, 8, 10, 5, 3, 6, 11, 12, '13.1', '13.2', 14, 15, 'Python', 16]
-    else:
-        roadmap = []
-    real_statuses = db.get_homework_status_for_student(student.id, exam_type)
-    allowed_statuses = {'completed', 'Пройдено', 'in_progress', 'В процессе'}
-    filtered_homeworks = []
-    for num in roadmap:
-        status = real_statuses.get(num)
-        if status in allowed_statuses:
-            homeworks = db.get_homework_by_exam(exam_type)
-            hw = next((h for h in homeworks if h.get_task_number() == num), None)
-            if hw:
-                filtered_homeworks.append(hw)
-    if not filtered_homeworks:
+    
+    # Получаем все задания студента с датами выдачи
+    homeworks_data = db.get_homeworks_for_student_with_filter(student.id, show_old=True)
+    
+    if not homeworks_data:
         await update.callback_query.edit_message_text(
             text=f"{student_menu_labels['homework'][student.theme or 'classic'][0]} У вас пока нет выданных домашних заданий.",
             reply_markup=InlineKeyboardMarkup([[themed_button('back', student.theme or 'classic', 'student_back')]])
         )
         return
-    # Определяем текущее задание (последнее по номеру)
-    filtered_homeworks.sort(key=lambda hw: hw.get_task_number())
-    current_homework = filtered_homeworks[-1]
-    old_homeworks = filtered_homeworks[:-1] if len(filtered_homeworks) > 1 else []
-    # Если скрывать старые задания — показываем только текущее
+    
+    # Сортируем по дате выдачи (самое новое первым)
+    homeworks_data.sort(key=lambda x: x[1], reverse=True)
+    
+    # Новое задание — самое последнее по дате
+    new_homework, new_assigned_at = homeworks_data[0]
+    
+    # Старые задания — все остальные, сортируем их по номеру
+    old_homeworks_data = homeworks_data[1:]
+    # Фильтруем по статусу: только 'пройдено' или 'в процессе'
+    allowed_statuses = {'completed', 'Пройдено', 'in_progress', 'В процессе'}
+    filtered_old_homeworks = []
+    for homework, assigned_at in old_homeworks_data:
+        # Получаем статус последнего назначения этого задания
+        status = None
+        with db.Session() as session:
+            from core.database import StudentHomework
+            shw = session.query(StudentHomework).filter_by(student_id=student.id, homework_id=homework.id).order_by(StudentHomework.assigned_at.desc()).first()
+            if shw:
+                status = shw.status
+                logging.warning(f"[STUDENT] Фильтрация старых: student_id={student.id}, homework_id={homework.id}, status={status}")
+        if status and status.strip() in allowed_statuses:
+            filtered_old_homeworks.append((homework, assigned_at))
+    old_homeworks_data = filtered_old_homeworks
+    old_homeworks_data.sort(key=lambda x: x[0].get_task_number())
+    
+    # Если скрывать старые задания — не показываем их
     if not student.show_old_homework:
-        old_homeworks = []
+        old_homeworks_data = []
+    
     # Пагинация для старых заданий
     per_page = 4
-    total = len(old_homeworks)
+    total = len(old_homeworks_data)
     max_page = (total + per_page - 1) // per_page - 1 if total > 0 else 0
     page = max(0, min(page, max_page))
     context.user_data['homework_page'] = page
     start = page * per_page
     end = start + per_page
-    homeworks_on_page = old_homeworks[start:end]
+    homeworks_on_page = old_homeworks_data[start:end]
+    
     keyboard = []
+    
     # Кнопки по 2 в строке для старых заданий
     for i in range(0, len(homeworks_on_page), 2):
         row = []
         for j in range(2):
             if i + j < len(homeworks_on_page):
-                homework = homeworks_on_page[i + j]
+                homework, assigned_at = homeworks_on_page[i + j]
                 short_title = homework.title[:20] + ('…' if len(homework.title) > 20 else '')
                 button_text = f"📚 {short_title}"
                 row.append(InlineKeyboardButton(button_text, callback_data=f"student_hw_{homework.id}"))
         if row:
             keyboard.append(row)
+    
     # Кнопки навигации
     nav_buttons = []
     if student.show_old_homework:
@@ -1420,15 +1414,18 @@ async def show_student_homework_menu(update, context, student, page=0):
             nav_buttons.append(InlineKeyboardButton("▶️", callback_data="student_homework_next"))
         if nav_buttons:
             keyboard.append(nav_buttons)
-    # (Кнопку 'Скрыть/показать старые задания' больше не добавляем)
-    # Текущее задание отдельной кнопкой над кнопкой 'Назад'
-    if current_homework:
-        short_title = current_homework.title[:40] + ('…' if len(current_homework.title) > 40 else '')
-        keyboard.append([InlineKeyboardButton(f"🆕 {short_title}", callback_data=f"student_hw_{current_homework.id}")])
+    
+    # Кнопка нового задания (после пагинации, перед кнопкой назад)
+    if new_homework:
+        short_title = new_homework.title[:40] + ('…' if len(new_homework.title) > 40 else '')
+        keyboard.append([InlineKeyboardButton(f"🆕 {short_title}", callback_data=f"student_hw_{new_homework.id}")])
+    
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="student_back")])
+    
     # Формируем заголовок
     header = f"📚 <b>Ваши домашние задания</b>\n"
     header += "─────────────\n"
+    
     await update.callback_query.edit_message_text(
         text=header,
         reply_markup=InlineKeyboardMarkup(keyboard),

@@ -114,17 +114,22 @@ class Homework(Base):
 
     def get_task_number(self):
         """Извлекает номер задания из заголовка"""
-        # Ищем числа в заголовке
-        numbers = re.findall(r'\d+(?:-\d+)?', self.title)
-        if not numbers:
-            return float('inf')  # Если нет номера, помещаем в конец списка
-        
-        # Берем первое найденное число
-        number = numbers[0]
-        if '-' in number:
-            # Если это диапазон (например, "19-21"), берем первое число
-            number = number.split('-')[0]
-        return int(number)
+        # Ищем диапазон (например, '19-21')
+        range_match = re.search(r'(\d+-\d+)', self.title)
+        if range_match:
+            return range_match.group(1)
+        # Ищем отдельное число
+        number_match = re.search(r'\d+', self.title)
+        if number_match:
+            return int(number_match.group(0))
+        # Если нет чисел, возвращаем последнее слово или всё после 'Задание'
+        text = self.title.strip()
+        if 'Задание' in text:
+            after = text.split('Задание', 1)[1].strip()
+            if after:
+                return after
+        # Если нет слова 'Задание', возвращаем последнее слово
+        return text.split()[-1] if text else text
 
 class Note(Base):
     __tablename__ = 'notes'
@@ -143,17 +148,22 @@ class Note(Base):
 
     def get_task_number(self):
         """Извлекает номер задания из заголовка"""
-        # Ищем числа в заголовке
-        numbers = re.findall(r'\d+(?:-\d+)?', self.title)
-        if not numbers:
-            return float('inf')  # Если нет номера, помещаем в конец списка
-        
-        # Берем первое найденное число
-        number = numbers[0]
-        if '-' in number:
-            # Если это диапазон (например, "19-21"), берем первое число
-            number = number.split('-')[0]
-        return int(number)
+        # Ищем диапазон (например, '19-21')
+        range_match = re.search(r'(\d+-\d+)', self.title)
+        if range_match:
+            return range_match.group(1)
+        # Ищем отдельное число
+        number_match = re.search(r'\d+', self.title)
+        if number_match:
+            return int(number_match.group(0))
+        # Если нет чисел, возвращаем последнее слово или всё после 'Задание'
+        text = self.title.strip()
+        if 'Задание' in text:
+            after = text.split('Задание', 1)[1].strip()
+            if after:
+                return after
+        # Если нет слова 'Задание', возвращаем последнее слово
+        return text.split()[-1] if text else text
 
 class StudentHomework(Base):
     __tablename__ = 'student_homework'
@@ -755,8 +765,9 @@ class Database:
             # Проверяем, не назначено ли уже это задание этому студенту
             existing = session.query(StudentHomework).filter_by(student_id=student_id, homework_id=homework_id).first()
             if existing:
-                # Если задание уже назначено, обновляем дату назначения
+                # Если задание уже назначено, обновляем дату назначения и сбрасываем статус
                 existing.assigned_at = datetime.now()
+                existing.status = 'assigned'  # Сбрасываем статус на "выдано"
                 session.commit()
                 return True
             else:

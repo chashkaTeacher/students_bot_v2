@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 import pytz
 import logging
+from sqlalchemy.exc import IntegrityError
 
 # Состояния для ConversationHandler
 ENTER_NAME, CHOOSE_EXAM, ENTER_LINK, CONFIRM_DELETE, EDIT_NAME, EDIT_EXAM, EDIT_STUDENT_LINK, ADD_NOTE = range(8)
@@ -303,36 +304,69 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         parts = query.data.split("_")
         logging.warning(f"[handle_admin_actions] parts: {parts}")
         student_id = int(parts[4])
-        task_num = json.loads(parts[5])
-        status = parts[6]
+        task_num = parts[5]
+        try:
+            task_num = int(task_num)
+        except ValueError:
+            task_num = task_num.strip('"')
+        status = "_".join(parts[6:])
         logging.warning(f"[handle_admin_actions] student_id: {student_id}, task_num: {task_num}, status: {status}")
         db = context.bot_data['db']
         student = db.get_student_by_id(student_id)
         status_map = {
+            "completed": "completed",
+            "in_progress": "in_progress",
+            "not_completed": "not_passed"
+        }
+        db_status = status_map.get(status, status)
+        status_text = {
             "completed": "Пройдено",
             "in_progress": "В процессе",
-            "not_completed": "Не пройдено"
-        }
-        status_text = status_map.get(status, status)
+            "not_passed": "Не пройдено"
+        }.get(db_status, status)
         if student:
             # Найти Homework по номеру и exam_type
             session = db.Session()
             try:
                 homeworks = session.query(Homework).filter(Homework.exam_type == student.exam_type).all()
+                # num из роадмапа должен быть передан в функцию как отдельный аргумент (например, original_title)
+                # Здесь предполагаем, что original_title уже есть в контексте (например, context.user_data['original_title'])
+                original_title = context.user_data.get('original_title') if hasattr(context, 'user_data') else None
+                if not original_title:
+                    # Фолбэк: если не передан, используем старую логику
+                    original_title = f"Задание {task_num}"
                 homework = next((hw for hw in homeworks if hw.get_task_number() == task_num), None)
                 if not homework:
-                    # Если не найдено — создаём виртуальное задание
-                    title = f"Задание {task_num}"
+                    # Если не найдено — создаём виртуальное задание с оригинальным title
+                    title = original_title
                     link = ""
                     homework = Homework(title=title, link=link, exam_type=student.exam_type)
                     session.add(homework)
-                    session.commit()
-                    session.refresh(homework)  # Получаем id до закрытия сессии
+                    try:
+                        session.commit()
+                        session.refresh(homework)  # Получаем id до закрытия сессии
+                    except Exception as e:
+                        session.rollback()
+                        from sqlalchemy.exc import IntegrityError
+                        if isinstance(e, IntegrityError):
+                            homework = session.query(Homework).filter_by(title=title, exam_type=student.exam_type).first()
+                        else:
+                            raise
                 homework_id = homework.id
             finally:
                 session.close()
             if homework:
-                db.update_homework_status(student.id, homework_id, status)
+                logging.warning(f"[ADMIN] Изменение статуса: student_id={student.id}, homework_id={homework_id}, db_status={db_status}")
+                db.update_homework_status(student.id, homework_id, db_status)
+                # После обновления статуса логируем, что реально сохранилось
+                session = db.Session()
+                try:
+                    from core.database import StudentHomework
+                    shw = session.query(StudentHomework).filter_by(student_id=student.id, homework_id=homework_id).order_by(StudentHomework.assigned_at.desc()).first()
+                    if shw:
+                        logging.warning(f"[ADMIN] В базе после изменения: status={shw.status}")
+                finally:
+                    session.close()
                 await query.edit_message_text(
                     f"Статус задания {task_num} успешно изменён на: {status_text}",
                     reply_markup=InlineKeyboardMarkup([
@@ -357,7 +391,11 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         parts = query.data.split("_")
         logging.warning(f"[handle_admin_actions] parts: {parts}")
         student_id = int(parts[3])
-        task_num = json.loads(parts[4])
+        task_num = parts[4]
+        try:
+            task_num = int(task_num)
+        except ValueError:
+            task_num = task_num.strip('"')
         logging.warning(f"[handle_admin_actions] student_id: {student_id}, task_num: {task_num}")
         await show_task_status_menu(update, context, student_id, task_num)
         return EDIT_TASK_STATUS
@@ -836,6 +874,12 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await admin_menu(update, context)
         return ConversationHandler.END
     elif query.data == "admin_back":
+        # Проверяем, если это меню статистики — всегда возвращаем в главное меню
+        if context.user_data.get('statistics_menu_opened'):
+            await admin_menu(update, context)
+            context.user_data.pop('statistics_menu_opened', None)
+            return ConversationHandler.END
+        # Остальные случаи — стандартная логика (оставить как есть или дополнить при необходимости)
         await admin_menu(update, context)
         return ConversationHandler.END
     
@@ -2042,6 +2086,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 async def show_statistics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    context.user_data['statistics_menu_opened'] = True
     keyboard = [
         [InlineKeyboardButton("📝 ОГЭ", callback_data="statistics_exam_OGE"),
          InlineKeyboardButton("🎓 ЕГЭ", callback_data="statistics_exam_EGE")],
@@ -2082,6 +2127,7 @@ async def handle_statistics_exam_choice(update: Update, context: ContextTypes.DE
 async def handle_statistics_student_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    context.user_data['statistics_menu_opened'] = True
     student_id = int(query.data.split('_')[-1]) if 'statistics_student_' in query.data else context.user_data.get('statistics_student_id')
     db = context.bot_data['db']
     student = db.get_student_by_id(student_id)
@@ -2129,6 +2175,8 @@ async def handle_statistics_student_choice(update: Update, context: ContextTypes
                     note_line = f"└─ <a href='{note.link}'>Конспект</a>"
             if num in (26, 27):
                 max_score = 2
+            elif num == '19-21':
+                max_score = 3
             elif isinstance(num, int) and 1 <= num <= 25:
                 max_score = 1
             else:
